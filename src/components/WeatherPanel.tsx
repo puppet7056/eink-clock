@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Droplets, KeyRound, RefreshCw, Sunrise, Sunset, Wind } from 'lucide-react';
 import type { AqiPayload, CwaWeatherPayload, HourlyForecastItem } from '../types/weather';
 import { WeatherIcon } from './WeatherIcons';
@@ -61,6 +61,7 @@ function HourlyChart({
   fontScale: number;
 }) {
   const isCompact4 = deviceScale === 'compact4';
+  const colCount = isCompact4 ? 6 : 12;
   // 4.3 吋螢幕每 2 小時取 1 格（共 6 格涵蓋未來 12 小時），避免橫向捲動衝突並維持大字清晰
   const slots = useMemo(() => {
     const first12 = hourly.slice(0, 12);
@@ -69,47 +70,71 @@ function HourlyChart({
   }, [hourly, isCompact4]);
   const count = slots.length;
 
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const [svgWidth, setSvgWidth] = useState<number>(600);
+
+  useLayoutEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+
+    const measure = () => {
+      const nextWidth = Math.round(el.getBoundingClientRect().width || el.clientWidth);
+      if (nextWidth > 0) {
+        setSvgWidth((prev) => (prev === nextWidth ? prev : nextWidth));
+      }
+    };
+
+    measure();
+    window.addEventListener('resize', measure);
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(measure);
+      observer.observe(el);
+    }
+
+    return () => {
+      window.removeEventListener('resize', measure);
+      if (observer) observer.disconnect();
+    };
+  }, [deviceScale, fontScale, isCompact4, count]);
+
   const clampedChartScale = Math.min(1.45, Math.max(0.88, fontScale));
   const baseChartHeight =
-    deviceScale === 'tablet10' ? 92 : isCompact4 ? 64 : deviceScale === 'phone' ? 58 : 70;
+    deviceScale === 'tablet10' ? 96 : isCompact4 ? 66 : deviceScale === 'phone' ? 60 : 74;
   const chartHeight = Math.round(baseChartHeight * (0.72 + 0.28 * clampedChartScale));
-  const heightClass =
-    deviceScale === 'tablet10'
-      ? 'h-[calc(92px*var(--fs-ctrl))]'
-      : isCompact4
-        ? 'h-[calc(64px*var(--fs-ctrl))]'
-        : deviceScale === 'phone'
-          ? 'h-[calc(58px*var(--fs-ctrl))]'
-          : 'h-[calc(70px*var(--fs-ctrl))]';
   const baseIconSize =
     deviceScale === 'tablet10' ? 26 : isCompact4 ? 20 : deviceScale === 'phone' ? 18 : 21;
   const iconSize = Math.round(baseIconSize * Math.min(1.38, Math.max(0.88, fontScale)));
 
   const svgTempFont = Number(
     (
-      (deviceScale === 'tablet10' ? 14.5 : isCompact4 ? 19 : 12.5) *
-      Math.min(1.24, Math.max(0.9, fontScale))
+      (deviceScale === 'tablet10' ? 15.5 : isCompact4 ? 14 : deviceScale === 'phone' ? 11.5 : 13) *
+      Math.min(1.3, Math.max(0.88, fontScale))
     ).toFixed(1)
   );
   const svgRainFont = Number(
     (
-      (deviceScale === 'tablet10' ? 13 : isCompact4 ? 17.5 : 11.5) *
-      Math.min(1.22, Math.max(0.9, fontScale))
+      (deviceScale === 'tablet10' ? 14 : isCompact4 ? 13 : deviceScale === 'phone' ? 10.5 : 12) *
+      Math.min(1.26, Math.max(0.88, fontScale))
     ).toFixed(1)
   );
   const svgWindFont = Number(
     (
-      (deviceScale === 'tablet10' ? 12 : isCompact4 ? 15.5 : 10.5) *
-      Math.min(1.18, Math.max(0.9, fontScale))
+      (deviceScale === 'tablet10' ? 13 : isCompact4 ? 12 : deviceScale === 'phone' ? 10 : 11) *
+      Math.min(1.22, Math.max(0.88, fontScale))
     ).toFixed(1)
   );
+
+  const stepX = svgWidth / colCount;
+  const rainBarW = Math.min(28, Math.max(12, Math.round(stepX * 0.38)));
+  const windBarW = Math.min(24, Math.max(10, Math.round(stepX * 0.34)));
 
   const { linePath, areaPath, points, maxRain, maxWind } = useMemo(() => {
     if (count === 0) {
       return { linePath: '', areaPath: '', points: [], maxRain: 100, maxWind: 10 };
     }
-    const width = 600;
-    const topPad = Math.round((isCompact4 ? 26 : 24) * Math.min(1.25, Math.max(0.95, fontScale)));
+    const topPad = Math.round(svgTempFont + 13);
     const bottomPad = 12;
     const plotH = Math.max(24, chartHeight - topPad - bottomPad);
 
@@ -118,7 +143,6 @@ function HourlyChart({
     const maxT = Math.max(...temps);
     const span = Math.max(2, maxT - minT);
 
-    const stepX = width / count;
     const pts = slots.map((slot, idx) => {
       const x = stepX * idx + stepX / 2;
       const ratio = (slot.temp - minT) / span;
@@ -138,7 +162,7 @@ function HourlyChart({
       maxRain: Math.max(40, ...slots.map((s) => s.pop)),
       maxWind: Math.max(6, ...slots.map((s) => s.windSpeed)),
     };
-  }, [slots, count, chartHeight, fontScale, isCompact4]);
+  }, [slots, count, chartHeight, svgTempFont, stepX]);
 
   if (count === 0) return null;
 
@@ -154,11 +178,14 @@ function HourlyChart({
 
   return (
     <div className={isCompact4 ? 'w-full overflow-hidden' : 'w-full overflow-x-auto'}>
-      <div className={minWidthClass}>
+      <div ref={trackRef} className={minWidthClass}>
         {metric === 'temp' && (
           <svg
-            viewBox={`0 0 600 ${chartHeight}`}
-            className={`w-full block overflow-visible ${heightClass}`}
+            width="100%"
+            height={chartHeight}
+            viewBox={`0 0 ${svgWidth} ${chartHeight}`}
+            preserveAspectRatio="none"
+            className="w-full block overflow-visible"
             role="img"
             aria-label="未來 12 小時溫度變化曲線"
           >
@@ -217,15 +244,18 @@ function HourlyChart({
 
         {metric === 'rain' && (
           <svg
-            viewBox={`0 0 600 ${chartHeight}`}
-            className={`w-full block overflow-visible ${heightClass}`}
+            width="100%"
+            height={chartHeight}
+            viewBox={`0 0 ${svgWidth} ${chartHeight}`}
+            preserveAspectRatio="none"
+            className="w-full block overflow-visible"
             role="img"
             aria-label="未來 12 小時降雨機率柱狀圖"
           >
             {slots.map((slot, idx) => {
-              const stepX = 600 / count;
               const cx = stepX * idx + stepX / 2;
-              const maxBarH = chartHeight - 22;
+              const topSpace = Math.round(svgRainFont + 10);
+              const maxBarH = Math.max(18, chartHeight - topSpace - 2);
               const barH = Math.max(4, Math.round((slot.pop / maxRain) * maxBarH));
               const barY = chartHeight - barH - 2;
               return (
@@ -242,9 +272,9 @@ function HourlyChart({
                     {slot.pop}%
                   </text>
                   <rect
-                    x={cx - 10}
+                    x={cx - rainBarW / 2}
                     y={barY}
-                    width={20}
+                    width={rainBarW}
                     height={barH}
                     rx={2}
                     fill={slot.pop >= 40 ? 'currentColor' : 'var(--surface-subtle)'}
@@ -259,17 +289,21 @@ function HourlyChart({
 
         {metric === 'wind' && (
           <svg
-            viewBox={`0 0 600 ${chartHeight}`}
-            className={`w-full block overflow-visible ${heightClass}`}
+            width="100%"
+            height={chartHeight}
+            viewBox={`0 0 ${svgWidth} ${chartHeight}`}
+            preserveAspectRatio="none"
+            className="w-full block overflow-visible"
             role="img"
             aria-label="未來 12 小時風速與濕度圖"
           >
             {slots.map((slot, idx) => {
-              const stepX = 600 / count;
               const cx = stepX * idx + stepX / 2;
-              const maxBarH = chartHeight - 30;
+              const topSpace = Math.round(svgWindFont + 8);
+              const bottomSpace = Math.round(svgWindFont + 5);
+              const maxBarH = Math.max(14, chartHeight - topSpace - bottomSpace);
               const barH = Math.max(5, Math.round((slot.windSpeed / maxWind) * maxBarH));
-              const barY = chartHeight - barH - 13;
+              const barY = chartHeight - barH - bottomSpace;
               return (
                 <g key={`${slot.dateLabel}-${slot.timeLabel}-wind-${idx}`}>
                   <text
@@ -284,9 +318,9 @@ function HourlyChart({
                     {slot.windSpeed}m/s
                   </text>
                   <rect
-                    x={cx - 8}
+                    x={cx - windBarW / 2}
                     y={barY}
-                    width={16}
+                    width={windBarW}
                     height={barH}
                     rx={2}
                     fill="var(--surface-subtle)"
