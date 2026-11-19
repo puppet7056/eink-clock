@@ -61,9 +61,9 @@ function HourlyChart({
   fontScale: number;
 }) {
   const isCompact4 = deviceScale === 'compact4';
-  const isTwoPageScale = isCompact4 || deviceScale === 'reader6';
+  const isTwoPageScale = deviceScale !== 'tablet10';
   const colCount = isTwoPageScale ? 6 : 12;
-  // 4.3 吋與 6 吋雙頁模式每 2 小時取 1 格（共 6 格涵蓋未來 12 小時），避免與左右滑動翻頁衝突並維持大字清晰
+  // 4.3 吋、手機型（Viwoods）與 6 吋（Read6）雙頁模式每 2 小時取 1 格（共 6 格涵蓋未來 12 小時），避免與左右滑動翻頁衝突並維持大字清晰
   const slots = useMemo(() => {
     const first12 = hourly.slice(0, 12);
     if (!isTwoPageScale || first12.length <= 6) return first12;
@@ -102,27 +102,27 @@ function HourlyChart({
 
   const clampedChartScale = Math.min(1.45, Math.max(0.88, fontScale));
   const baseChartHeight =
-    deviceScale === 'tablet10' ? 96 : deviceScale === 'reader6' ? 84 : isCompact4 ? 66 : 60;
+    deviceScale === 'tablet10' ? 96 : deviceScale === 'reader6' ? 84 : deviceScale === 'phone' ? 76 : 66;
   const chartHeight = Math.round(baseChartHeight * (0.72 + 0.28 * clampedChartScale));
   const baseIconSize =
-    deviceScale === 'tablet10' ? 26 : deviceScale === 'reader6' ? 24 : isCompact4 ? 20 : 18;
+    deviceScale === 'tablet10' ? 26 : deviceScale === 'reader6' ? 24 : deviceScale === 'phone' ? 22 : 20;
   const iconSize = Math.round(baseIconSize * Math.min(1.38, Math.max(0.88, fontScale)));
 
   const svgTempFont = Number(
     (
-      (deviceScale === 'tablet10' ? 15.5 : deviceScale === 'reader6' ? 15 : isCompact4 ? 14 : 11.5) *
+      (deviceScale === 'tablet10' ? 15.5 : deviceScale === 'reader6' ? 15 : deviceScale === 'phone' ? 14.5 : 14) *
       Math.min(1.3, Math.max(0.88, fontScale))
     ).toFixed(1)
   );
   const svgRainFont = Number(
     (
-      (deviceScale === 'tablet10' ? 14 : deviceScale === 'reader6' ? 13.5 : isCompact4 ? 13 : 10.5) *
+      (deviceScale === 'tablet10' ? 14 : deviceScale === 'reader6' ? 13.5 : deviceScale === 'phone' ? 13 : 13) *
       Math.min(1.26, Math.max(0.88, fontScale))
     ).toFixed(1)
   );
   const svgWindFont = Number(
     (
-      (deviceScale === 'tablet10' ? 13 : deviceScale === 'reader6' ? 12.5 : isCompact4 ? 12 : 10) *
+      (deviceScale === 'tablet10' ? 13 : deviceScale === 'reader6' ? 12.5 : deviceScale === 'phone' ? 12 : 12) *
       Math.min(1.22, Math.max(0.88, fontScale))
     ).toFixed(1)
   );
@@ -173,9 +173,7 @@ function HourlyChart({
       ? 'min-w-[620px] w-full'
       : fontScale >= 1.3
         ? 'min-w-[540px] w-full'
-        : deviceScale === 'phone'
-          ? 'min-w-[440px]'
-          : 'min-w-[420px] w-full';
+        : 'min-w-[420px] w-full';
 
   return (
     <div className={isTwoPageScale ? 'w-full overflow-hidden' : 'w-full overflow-x-auto'}>

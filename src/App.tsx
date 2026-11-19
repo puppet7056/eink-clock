@@ -357,8 +357,9 @@ export default function App() {
   const effectiveDeviceScale: DeviceScale =
     deviceProfile === 'auto' ? detectedScale : deviceProfile;
   const isCompact4 = effectiveDeviceScale === 'compact4';
+  const isPhone = effectiveDeviceScale === 'phone';
   const isReader6 = effectiveDeviceScale === 'reader6';
-  const isTwoPageMode = isCompact4 || isReader6;
+  const isTwoPageMode = isCompact4 || isPhone || isReader6;
 
   // 計算當下目標背光狀態（完全無背光極致省電 / 夜晚部分背光 / 手動 / 系統）
   const backlightEval = useMemo(
@@ -406,7 +407,7 @@ export default function App() {
     document.documentElement.dataset.fontScale = String(fontScale);
   }, [fontScale]);
 
-  // 4.3 吋（閱星瞳 XTEINK X4）與 6 吋（Read6）實體翻頁鍵 / 音量鍵 / 方向鍵雙頁切換
+  // 4.3 吋（閱星瞳 XTEINK X4）、手機型（Viwoods）與 6 吋（Read6）實體翻頁鍵 / 音量鍵 / 方向鍵雙頁切換
   useEffect(() => {
     if (!isTwoPageMode) {
       setCompactPage(0);
@@ -1093,7 +1094,7 @@ export default function App() {
       : effectiveDeviceScale === 'compact4'
         ? 'text-[length:min(16vw,calc(clamp(56px,11vw,82px)*var(--fs-clock)))]'
         : effectiveDeviceScale === 'phone'
-          ? 'text-[length:min(15vw,calc(clamp(48px,10vw,74px)*var(--fs-clock)))]'
+          ? 'text-[length:min(16vw,calc(clamp(62px,11vw,94px)*var(--fs-clock)))]'
           : 'text-[length:min(16vw,calc(clamp(76px,10vw,120px)*var(--fs-clock)))]';
 
   const portraitClockClass =
@@ -1102,7 +1103,7 @@ export default function App() {
       : effectiveDeviceScale === 'compact4'
         ? 'text-[length:min(26vw,calc(clamp(66px,21vw,94px)*var(--fs-clock)))]'
         : effectiveDeviceScale === 'phone'
-          ? 'text-[length:min(24vw,calc(clamp(54px,18vw,82px)*var(--fs-clock)))]'
+          ? 'text-[length:min(26vw,calc(clamp(74px,20vw,112px)*var(--fs-clock)))]'
           : 'text-[length:min(26vw,calc(clamp(84px,19vw,132px)*var(--fs-clock)))]';
 
   const fontScaleRatio = fontScale / 100;
@@ -1332,7 +1333,7 @@ export default function App() {
           </div>
         </header>
 
-        {/* 內容主區域：4.3 吋（閱星瞳 XTEINK X4）與 6 吋（Read6）採雙頁切換（第1頁時鐘天氣 / 第2頁農曆日曆），支援觸控滑動、底部按鈕與實體按鍵 */}
+        {/* 內容主區域：4.3 吋、手機型（Viwoods）與 6 吋（Read6）採雙頁切換（第1頁時鐘天氣 / 第2頁農曆日曆），支援觸控滑動、底部按鈕與實體按鍵 */}
         {isTwoPageMode ? (
           <div
             className="flex-1 flex flex-col min-h-0 overflow-hidden"
@@ -1350,10 +1351,10 @@ export default function App() {
                     >
                       {timeDisplay}
                     </div>
-                    <div className={`mt-2 ${isReader6 ? 'text-[length:calc(16px*var(--fs))]' : 'text-[length:calc(13.5px*var(--fs))]'} font-extrabold`}>
+                    <div className={`mt-2 ${isReader6 ? 'text-[length:calc(16px*var(--fs))]' : isPhone ? 'text-[length:calc(14.5px*var(--fs))]' : 'text-[length:calc(13.5px*var(--fs))]'} font-extrabold`}>
                       {townPreset.name}
                     </div>
-                    <div className={`${isReader6 ? 'text-[length:calc(13.5px*var(--fs))]' : 'text-[length:calc(11.5px*var(--fs))]'} font-semibold text-[var(--fg-muted)]`}>
+                    <div className={`${isReader6 ? 'text-[length:calc(13.5px*var(--fs))]' : isPhone ? 'text-[length:calc(12.5px*var(--fs))]' : 'text-[length:calc(11.5px*var(--fs))]'} font-semibold text-[var(--fg-muted)]`}>
                       {todayInfo.holiday
                         ? `國定假日 · ${todayInfo.holiday}`
                         : todayInfo.solarTerm
@@ -1380,13 +1381,13 @@ export default function App() {
               ) : (
                 <main className="flex-1 flex flex-col justify-between min-h-0 overflow-y-auto">
                   {/* 第 1 頁：大時鐘 */}
-                  <section className={`text-center ${isReader6 ? 'py-4 border-b-[3px]' : 'py-2.5 border-b-[2px]'} border-[var(--border-color)] shrink-0`}>
+                  <section className={`text-center ${isReader6 ? 'py-4 border-b-[3px]' : isPhone ? 'py-3.5 border-b-[2px]' : 'py-2.5 border-b-[2px]'} border-[var(--border-color)] shrink-0`}>
                     <div
                       className={`${portraitClockClass} font-black leading-[0.92] tracking-[-3px] font-num`}
                     >
                       {timeDisplay}
                     </div>
-                    <div className={`mt-1.5 flex items-center justify-center gap-2 ${isReader6 ? 'text-[length:calc(14px*var(--fs))]' : 'text-[length:calc(11.5px*var(--fs))]'} font-bold text-[var(--fg-muted)]`}>
+                    <div className={`mt-1.5 flex items-center justify-center gap-2 ${isReader6 ? 'text-[length:calc(14px*var(--fs))]' : isPhone ? 'text-[length:calc(13px*var(--fs))]' : 'text-[length:calc(11.5px*var(--fs))]'} font-bold text-[var(--fg-muted)]`}>
                       <span>{townPreset.name}</span>
                       <span aria-hidden="true">·</span>
                       <span>{backlightEval.shortLabel}</span>
@@ -1402,7 +1403,7 @@ export default function App() {
                   </section>
 
                   {/* 第 1 頁：Google 天氣風格 + 未來 12 小時變化（6 格清爽版） */}
-                  <div className={`flex-1 flex flex-col justify-center ${isReader6 ? 'py-3' : 'py-2'} min-h-0`}>
+                  <div className={`flex-1 flex flex-col justify-center ${isCompact4 ? 'py-2' : 'py-3'} min-h-0`}>
                     <WeatherPanel
                       townName={townPreset.name}
                       weather={weather}
@@ -1421,7 +1422,7 @@ export default function App() {
               )
             ) : (
               /* 第 2 頁：全畫面農曆月曆與行程 */
-              <main className={`flex-1 flex flex-col ${isReader6 ? 'pt-3' : 'pt-2'} min-h-0 overflow-hidden`}>
+              <main className={`flex-1 flex flex-col ${isCompact4 ? 'pt-2' : 'pt-3'} min-h-0 overflow-hidden`}>
                 <CalendarPanel
                   today={now}
                   events={events}
@@ -1441,10 +1442,10 @@ export default function App() {
               </main>
             )}
 
-            {/* 4.3 吋 / 6 吋底部雙頁切換列（支援按鈕點擊、觸控滑動與實體翻頁鍵／音量鍵／方向鍵） */}
+            {/* 4.3 吋 / 手機型（Viwoods）/ 6 吋（Read6）底部雙頁切換列 */}
             <nav
               aria-label="雙頁切換"
-              className={`${isReader6 ? 'pt-2 mt-1.5' : 'pt-1.5 mt-1'} border-t-[2px] border-[var(--border-color)] shrink-0 flex flex-col gap-1`}
+              className={`${isCompact4 ? 'pt-1.5 mt-1' : 'pt-2 mt-1.5'} border-t-[2px] border-[var(--border-color)] shrink-0 flex flex-col gap-1`}
             >
               <div className="grid grid-cols-2 border-[1.5px] border-[var(--border-color)] rounded-[6px] overflow-hidden">
                 <button
@@ -1454,15 +1455,17 @@ export default function App() {
                   className={`flex items-center justify-center gap-1.5 ${
                     isReader6
                       ? 'py-2 px-3 text-[length:calc(14px*var(--fs-ctrl))]'
-                      : 'py-1.5 px-2 text-[length:calc(12.5px*var(--fs-ctrl))]'
+                      : isPhone
+                        ? 'py-2 px-2.5 text-[length:calc(13.5px*var(--fs-ctrl))]'
+                        : 'py-1.5 px-2 text-[length:calc(12.5px*var(--fs-ctrl))]'
                   } font-black cursor-pointer whitespace-nowrap ${
                     compactPage === 0
                       ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
                       : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
                   }`}
                 >
-                  <ChevronLeft className={`${isReader6 ? 'w-4 h-4' : 'w-3.5 h-3.5'} shrink-0`} />
-                  <Clock className={`${isReader6 ? 'w-4 h-4' : 'w-3.5 h-3.5'} shrink-0`} />
+                  <ChevronLeft className={`${isCompact4 ? 'w-3.5 h-3.5' : 'w-4 h-4'} shrink-0`} />
+                  <Clock className={`${isCompact4 ? 'w-3.5 h-3.5' : 'w-4 h-4'} shrink-0`} />
                   <span>時鐘天氣</span>
                   <span className="font-num opacity-80">1/2</span>
                 </button>
@@ -1473,17 +1476,19 @@ export default function App() {
                   className={`flex items-center justify-center gap-1.5 ${
                     isReader6
                       ? 'py-2 px-3 text-[length:calc(14px*var(--fs-ctrl))]'
-                      : 'py-1.5 px-2 text-[length:calc(12.5px*var(--fs-ctrl))]'
+                      : isPhone
+                        ? 'py-2 px-2.5 text-[length:calc(13.5px*var(--fs-ctrl))]'
+                        : 'py-1.5 px-2 text-[length:calc(12.5px*var(--fs-ctrl))]'
                   } font-black cursor-pointer whitespace-nowrap border-l-[1.5px] border-[var(--border-color)] ${
                     compactPage === 1
                       ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
                       : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
                   }`}
                 >
-                  <CalendarDays className={`${isReader6 ? 'w-4 h-4' : 'w-3.5 h-3.5'} shrink-0`} />
+                  <CalendarDays className={`${isCompact4 ? 'w-3.5 h-3.5' : 'w-4 h-4'} shrink-0`} />
                   <span>農曆日曆</span>
                   <span className="font-num opacity-80">2/2</span>
-                  <ChevronRight className={`${isReader6 ? 'w-4 h-4' : 'w-3.5 h-3.5'} shrink-0`} />
+                  <ChevronRight className={`${isCompact4 ? 'w-3.5 h-3.5' : 'w-4 h-4'} shrink-0`} />
                 </button>
               </div>
             </nav>
@@ -1567,22 +1572,14 @@ export default function App() {
         ) : (
           <main className="flex-1 flex flex-col min-h-0 overflow-y-auto">
             {/* 大時鐘 */}
-            <section
-              className={`text-center ${
-                effectiveDeviceScale === 'phone' ? 'py-2' : 'py-3'
-              } border-b-[3px] border-[var(--border-color)] shrink-0`}
-            >
+            <section className="text-center py-3 border-b-[3px] border-[var(--border-color)] shrink-0">
               <div className={`${portraitClockClass} font-black leading-[0.95] tracking-[-3px] font-num`}>
                 {timeDisplay}
               </div>
             </section>
 
             {/* Google 天氣風格 12 小時天氣變化 */}
-            <div
-              className={`${
-                effectiveDeviceScale === 'phone' ? 'py-2.5' : 'py-3'
-              } border-b-[3px] border-[var(--border-color)] shrink-0`}
-            >
+            <div className="py-3 border-b-[3px] border-[var(--border-color)] shrink-0">
               <WeatherPanel
                 townName={townPreset.name}
                 weather={weather}
@@ -1599,11 +1596,7 @@ export default function App() {
             </div>
 
             {/* 農曆與國定假日月曆 / 近期日程 */}
-            <div
-              className={`flex-1 ${
-                effectiveDeviceScale === 'phone' ? 'pt-2 min-h-[240px]' : 'pt-3 min-h-[270px]'
-              } flex flex-col`}
-            >
+            <div className="flex-1 pt-3 min-h-[270px] flex flex-col">
               <CalendarPanel
                 today={now}
                 events={events}
@@ -2078,9 +2071,9 @@ export default function App() {
                 >
                   <option value="auto">自動偵測（推薦）</option>
                   <option value="compact4">4.3 吋（閱星瞳 XTEINK X4・雙頁）</option>
-                  <option value="phone">手機型（Viwoods）</option>
+                  <option value="phone">手機型（Viwoods・雙頁）</option>
                   <option value="reader6">6 吋電子紙閱讀器（如 Read6・雙頁）</option>
-                  <option value="tablet10">10.3 吋（BOOX）</option>
+                  <option value="tablet10">10.3 吋（BOOX・單頁全景）</option>
                 </select>
               </div>
 
@@ -2258,7 +2251,7 @@ export default function App() {
               <ol className="list-decimal pl-[1.4em] flex flex-col gap-2 text-[length:calc(13px*var(--fs))] leading-[1.6] font-semibold">
                 <li>
                   <span className="font-extrabold">尺寸、雙頁切換與字體大小：</span>
-                  支援 4.3 吋（閱星瞳 XTEINK X4）、6 吋電子紙閱讀器（如 Read6 / Read6 Pro）、10.3 吋黑白（如 BOOX 10.3）及手機型閱讀器（如 Viwoods AiPaper）。其中 4.3 吋與 6 吋皆採雙頁排版（第 1 頁時鐘天氣、第 2 頁農曆日曆），可透過「左右滑動」、「底部切換按鈕」或「實體翻頁鍵／音量鍵／方向鍵」切換；字體大小可在設定最上方調整 85%～170%（10.3 吋建議 130%～150%）。
+                  支援 4.3 吋（閱星瞳 XTEINK X4）、手機型閱讀器（如 Viwoods）、6 吋閱讀器（如 Read6 / Read6 Pro）及 10.3 吋大螢幕（如 BOOX 10.3）。其中 4.3 吋、手機型與 6 吋皆採雙頁排版（第 1 頁時鐘天氣、第 2 頁農曆日曆），可透過「左右滑動」、「底部切換按鈕」或「實體翻頁鍵／音量鍵／方向鍵」切換；10.3 吋維持單頁全景排版；字體大小可在設定最上方調整 85%～170%（10.3 吋建議 130%～150%）。
                 </li>
                 <li>
                   <span className="font-extrabold">電子紙防殘影：</span>
