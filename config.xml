@@ -1,0 +1,23 @@
+<?xml version='1.0' encoding='utf-8'?>
+<widget id="tw.eink.clockdashboard" version="1.0.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
+    <name>電子紙時鐘</name>
+    <description>高對比電子紙風格桌面時鐘與資訊看板，支援台灣中央氣象署預報、農曆與國定假日，適配 6 吋、10.3 吋 BOOX 與手機型電子紙閱讀器。</description>
+    <author email="dev@example.com" href="https://github.com">E-Ink Dashboard</author>
+    <content src="index.html" />
+    <access origin="*" />
+    <allow-navigation href="*" />
+    <allow-intent href="http://*/*" />
+    <allow-intent href="https://*/*" />
+
+    <preference name="Fullscreen" value="true" />
+    <preference name="AndroidInsecureFileModeEnabled" value="true" />
+    <preference name="DisallowOverscroll" value="true" />
+    <preference name="BackgroundColor" value="0xffffffff" />
+    <preference name="KeepRunning" value="true" />
+    <preference name="android-minSdkVersion" value="24" />
+    <preference name="android-targetSdkVersion" value="34" />
+
+    <platform name="android">
+        <preference name="AndroidWindowSplashScreenBackground" value="#FFFFFF" />
+    </platform>
+</widget>

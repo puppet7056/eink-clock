@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>E-Ink 桌面資訊看板</title>
+    <meta name="description" content="高對比電子紙風格桌面時鐘與資訊看板，整合桃園平鎮天氣、空氣品質與 Google 日曆行程。" />
+    <meta property="og:title" content="E-Ink 桌面資訊看板" />
+    <meta property="og:description" content="高對比電子紙風格桌面時鐘與資訊看板，整合桃園平鎮天氣、空氣品質與 Google 日曆行程。" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700;800&family=Noto+Sans+TC:wght@500;600;700;800;900&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="cordova.js"></script>
+    <script>
+      (function () {
+        function enableEinkDisplayMode() {
+          try {
+            if (window.plugins && window.plugins.insomnia && typeof window.plugins.insomnia.keepAwake === 'function') {
+              window.plugins.insomnia.keepAwake();
+            }
+          } catch (e) {}
+
+          try {
+            if (window.AndroidFullScreen && typeof window.AndroidFullScreen.immersiveMode === 'function') {
+              window.AndroidFullScreen.immersiveMode();
+            }
+          } catch (e) {}
+
+          try {
+            window.dispatchEvent(new Event('eink-cordova-ready'));
+          } catch (e) {}
+        }
+
+        document.addEventListener('deviceready', enableEinkDisplayMode, false);
+        document.addEventListener('resume', enableEinkDisplayMode, false);
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

@@ -1,0 +1,6 @@
+{
+  "name": "E-Ink 桌面資訊看板",
+  "description": "高對比電子紙風格桌面時鐘與資訊看板，整合桃園平鎮天氣、空氣品質與 Google 日曆行程。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
