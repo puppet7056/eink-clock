@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type TouchEvent } from 'react';
-import type { User } from 'firebase/auth';
 import {
   BatteryCharging,
   BatteryFull,
@@ -71,7 +70,12 @@ import {
   GoogleAuthExpiredError,
   googleLogout,
   googleSignIn,
+  initAndroidNativeOAuthListener,
   initGoogleAuth,
+  isAndroidNativeOAuthConfigured,
+  refreshAndroidGoogleTokenIfNeeded,
+  startAndroidNativeGoogleSignIn,
+  type GoogleAccountProfile,
   type GoogleTaskItem,
 } from './utils/googleWorkspace';
 import { parseGoogleICalEvents } from './utils/icalParser';
@@ -150,7 +154,8 @@ function isStandaloneApkRuntime(): boolean {
   if (typeof window === 'undefined') return false;
   return (
     window.location.protocol === 'file:' ||
-    Boolean((window as unknown as { cordova?: unknown }).cordova)
+    Boolean((window as unknown as { cordova?: unknown }).cordova) ||
+    (window.location.protocol === 'https:' && window.location.hostname === 'localhost')
   );
 }
 
@@ -298,7 +303,7 @@ export default function App() {
   const [calendarError, setCalendarError] = useState<string | null>(null);
 
   // Google 帳號登入狀態（OAuth 存取憑證一律只存在記憶體中，絕不寫入 localStorage/sessionStorage）
-  const [googleUser, setGoogleUser] = useState<User | null>(null);
+  const [googleUser, setGoogleUser] = useState<GoogleAccountProfile | null>(null);
   const [googleToken, setGoogleToken] = useState<string | null>(null);
   const [needsGoogleAuth, setNeedsGoogleAuth] = useState<boolean>(true);
   const [googleAuthLoading, setGoogleAuthLoading] = useState<boolean>(false);
@@ -660,17 +665,36 @@ export default function App() {
     }
   }, [townPreset, cwaApiKey, strictApiKeyOnly]);
 
-  // 監聽 Firebase Google 登入狀態（登出或重整頁面後自動清除記憶體憑證並要求重新授權）
+  // 監聽 Google 登入狀態：網頁版走 Firebase Auth，Android APK 走原生深層連結 PKCE 回呼
   useEffect(() => {
+    if (isStandaloneApkRuntime()) {
+      const unsubscribeNative = initAndroidNativeOAuthListener(
+        (account, token) => {
+          setGoogleUser(account);
+          setGoogleToken(token);
+          setNeedsGoogleAuth(false);
+          setGoogleAuthLoading(false);
+          setGoogleAuthError(null);
+          setCalendarError(null);
+        },
+        (errMsg) => {
+          setGoogleAuthLoading(false);
+          setGoogleAuthError(errMsg);
+          setCalendarError(errMsg);
+        }
+      );
+      return unsubscribeNative;
+    }
+
     const unsubscribe = initGoogleAuth(
-      (user, token) => {
-        setGoogleUser(user);
+      (account, token) => {
+        setGoogleUser(account);
         setGoogleToken(token);
         setNeedsGoogleAuth(false);
         setGoogleAuthError(null);
       },
-      (signedInUserWithoutToken) => {
-        setGoogleUser(signedInUserWithoutToken);
+      (signedInAccountWithoutToken) => {
+        setGoogleUser(signedInAccountWithoutToken);
         setGoogleToken(null);
         setNeedsGoogleAuth(true);
       }
@@ -681,9 +705,37 @@ export default function App() {
   const handleGoogleSignIn = useCallback(async () => {
     setGoogleAuthLoading(true);
     setGoogleAuthError(null);
+
+    if (isStandaloneApkRuntime()) {
+      if (!isAndroidNativeOAuthConfigured()) {
+        const msg =
+          'APK 尚未綁定 Android OAuth 用戶端 ID，請先於 Google Cloud Console 建立 Android 類型用戶端並寫入 android-oauth-config.json 後重新打包 APK；或先使用下方「.ics 秘密網址」同步活動。';
+        setGoogleAuthLoading(false);
+        setGoogleAuthError(msg);
+        setCalendarError(msg);
+        return;
+      }
+
+      try {
+        await startAndroidNativeGoogleSignIn();
+        // Browser is now open; when Google redirects back to the APK,
+        // initAndroidNativeOAuthListener will complete the token exchange.
+        // Release loading spinner after a brief delay in case user backs out without completing.
+        window.setTimeout(() => {
+          setGoogleAuthLoading(false);
+        }, 4000);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '無法開啟瀏覽器進行 Google 登入';
+        setGoogleAuthLoading(false);
+        setGoogleAuthError(msg);
+        setCalendarError(msg);
+      }
+      return;
+    }
+
     try {
       const result = await googleSignIn();
-      setGoogleUser(result.user);
+      setGoogleUser(result.account);
       setGoogleToken(result.accessToken);
       setNeedsGoogleAuth(false);
       setCalendarError(null);
@@ -728,10 +780,47 @@ export default function App() {
 
     if (googleToken) {
       try {
-        const [googleEvents, googleTasks] = await Promise.all([
-          fetchGoogleCalendarEvents(googleToken, currentNow),
-          fetchGoogleTasks(googleToken, currentNow),
-        ]);
+        let activeToken = googleToken;
+        if (googleUser?.authMode === 'android-native') {
+          const refreshed = await refreshAndroidGoogleTokenIfNeeded(false);
+          if (refreshed && refreshed !== googleToken) {
+            activeToken = refreshed;
+            setGoogleToken(refreshed);
+          }
+        }
+
+        const runGoogleSync = async (tokenToUse: string) =>
+          Promise.all([
+            fetchGoogleCalendarEvents(tokenToUse, currentNow),
+            fetchGoogleTasks(tokenToUse, currentNow),
+          ]);
+
+        let calendarResult;
+        let googleTasks;
+        try {
+          [calendarResult, googleTasks] = await runGoogleSync(activeToken);
+        } catch (firstErr) {
+          if (
+            firstErr instanceof GoogleAuthExpiredError &&
+            googleUser?.authMode === 'android-native'
+          ) {
+            const renewed = await refreshAndroidGoogleTokenIfNeeded(true);
+            if (!renewed) throw firstErr;
+            activeToken = renewed;
+            setGoogleToken(renewed);
+            [calendarResult, googleTasks] = await runGoogleSync(renewed);
+          } else {
+            throw firstErr;
+          }
+        }
+
+        const { events: googleEvents, calendarEmail } = calendarResult;
+        if (calendarEmail) {
+          setGoogleUser((prev) =>
+            prev && prev.email !== calendarEmail ? { ...prev, email: calendarEmail } : prev
+          );
+        }
+
         const upcomingCount = googleEvents.filter((ev) => ev.date >= startOfToday).length;
         setEvents(googleEvents);
         setTasks(googleTasks);
@@ -781,7 +870,7 @@ export default function App() {
       setCalendarError(msg);
       setSyncStatus('日曆同步異常');
     }
-  }, [googleToken, icalUrl, backlightEval.isExtremePowerSave]);
+  }, [googleToken, googleUser?.authMode, icalUrl, backlightEval.isExtremePowerSave]);
 
   // 時鐘對齊整分鐘更新
   useEffect(() => {
@@ -1908,7 +1997,9 @@ export default function App() {
 
                 {isStandaloneApkRuntime() && (
                   <p className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.45]">
-                    提示：Android 獨立 APK 內嵌視窗若被 Google 安全政策阻擋彈出登入，建議改由電子紙瀏覽器開啟網頁版登入，或使用下方「iCal (.ics) 秘密網址」備用方案同步活動。
+                    {isAndroidNativeOAuthConfigured()
+                      ? '已啟用 Android APK 原生登入模式：點擊後將以系統瀏覽器登入 Google，授權完成會自動跳回本時鐘並背景自動續期。'
+                      : '尚未設定 Android OAuth 用戶端 ID：完成設定並重新打包 APK 後，即可在 APK 內一鍵跳轉瀏覽器完成登入並自動返回。'}
                   </p>
                 )}
               </div>

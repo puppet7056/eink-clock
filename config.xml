@@ -12,6 +12,7 @@
     <allow-intent href="https://*/*" />
 
     <preference name="Fullscreen" value="true" />
+    <preference name="AndroidLaunchMode" value="singleTask" />
     <preference name="AndroidInsecureFileModeEnabled" value="true" />
     <preference name="DisallowOverscroll" value="true" />
     <preference name="BackgroundColor" value="0xffffffff" />

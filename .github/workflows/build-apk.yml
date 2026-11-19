@@ -47,7 +47,9 @@ jobs:
           yes | "$SDKMANAGER" --sdk_root="${SDK_DIR}" --licenses > /dev/null 2>&1 || true
           yes | "$SDKMANAGER" --sdk_root="${SDK_DIR}" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
-      - name: Compute auto-incrementing release version
+      - name: Compute auto-incrementing release version & Android OAuth scheme
+        env:
+          INPUT_ANDROID_OAUTH_CLIENT_ID: ${{ secrets.ANDROID_OAUTH_CLIENT_ID || vars.ANDROID_OAUTH_CLIENT_ID }}
         run: |
           RUN_NUM="${GITHUB_RUN_NUMBER:-1}"
           VER_NAME="1.0.${RUN_NUM}"
@@ -56,11 +58,29 @@ jobs:
           echo "APP_VERSION_CODE=${VER_CODE}" >> "$GITHUB_ENV"
           echo "Version -> v${VER_NAME} (versionCode=${VER_CODE})"
 
+          CLIENT_ID="${INPUT_ANDROID_OAUTH_CLIENT_ID}"
+          if [ -z "$CLIENT_ID" ] && [ -f "android-oauth-config.json" ]; then
+            CLIENT_ID="$(node -e "const c=JSON.parse(require('fs').readFileSync('android-oauth-config.json','utf8')); console.log((c.androidOAuthClientId||'').trim());")"
+          fi
+
+          URL_SCHEME="tw.eink.clockdashboard.oauth"
+          if [ -n "$CLIENT_ID" ]; then
+            PREFIX="${CLIENT_ID%.apps.googleusercontent.com}"
+            if [ "$PREFIX" != "$CLIENT_ID" ] && [ -n "$PREFIX" ]; then
+              URL_SCHEME="com.googleusercontent.apps.${PREFIX}"
+            fi
+          fi
+
+          echo "ANDROID_OAUTH_CLIENT_ID=${CLIENT_ID}" >> "$GITHUB_ENV"
+          echo "OAUTH_URL_SCHEME=${URL_SCHEME}" >> "$GITHUB_ENV"
+          echo "Android OAuth Client configured: $([ -n "$CLIENT_ID" ] && echo 'YES' || echo 'NO'), URL_SCHEME=${URL_SCHEME}"
+
       - name: Install dependencies & build web assets
         env:
           VITE_APP_VERSION: ${{ env.APP_VERSION }}
           VITE_APP_VERSION_CODE: ${{ env.APP_VERSION_CODE }}
           VITE_GITHUB_REPO: ${{ github.repository }}
+          VITE_ANDROID_OAUTH_CLIENT_ID: ${{ env.ANDROID_OAUTH_CLIENT_ID }}
         run: |
           npm install
           npm run build
@@ -115,7 +135,11 @@ jobs:
               cordova plugin add "${plugin}" --nosave
             fi
           done
+          if [ ! -d "plugins/cordova-plugin-eink-oauth" ]; then
+            cordova plugin add ./cordova-plugins/cordova-plugin-eink-oauth --variable URL_SCHEME="${OAUTH_URL_SCHEME}" --nosave
+          fi
           cordova plugin ls
+          grep -n "scheme" platforms/android/app/src/main/AndroidManifest.xml || true
           cordova requirements android
 
       - name: Build Debug APK & verify persistent signature

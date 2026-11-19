@@ -6,6 +6,7 @@ import {
   signInWithPopup,
   type User,
 } from 'firebase/auth';
+import androidOAuthConfig from '../../android-oauth-config.json';
 import firebaseConfig from '../../firebase-applet-config.json';
 import type { CalendarEventItem } from '../components/CalendarPanel';
 
@@ -13,6 +14,12 @@ export const GOOGLE_WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events.readonly',
   'https://www.googleapis.com/auth/tasks.readonly',
 ] as const;
+
+export interface GoogleAccountProfile {
+  email: string;
+  displayName?: string | null;
+  authMode: 'web-firebase' | 'android-native';
+}
 
 export interface GoogleTaskItem {
   id: string;
@@ -24,10 +31,37 @@ export interface GoogleTaskItem {
   isOverdue: boolean;
 }
 
+export interface GoogleCalendarFetchResult {
+  events: CalendarEventItem[];
+  calendarEmail: string | null;
+}
+
 export class GoogleAuthExpiredError extends Error {
   constructor(message = 'Google 授權已過期，請重新登入 Google 帳號以繼續同步日曆與待辦工作。') {
     super(message);
     this.name = 'GoogleAuthExpiredError';
+  }
+}
+
+interface EInkOAuthCordovaBridge {
+  openAuthUrl: (
+    url: string,
+    onSuccess?: () => void,
+    onError?: (err: unknown) => void
+  ) => void;
+  listen: (
+    onCallbackUrl: (url: string) => void,
+    onError?: (err: unknown) => void
+  ) => void;
+  consumePendingCallback: (
+    onSuccess: (url: string) => void,
+    onError?: (err: unknown) => void
+  ) => void;
+}
+
+declare global {
+  interface Window {
+    EInkOAuth?: EInkOAuthCordovaBridge;
   }
 }
 
@@ -40,24 +74,346 @@ for (const scope of GOOGLE_WORKSPACE_SCOPES) {
 }
 provider.setCustomParameters({ prompt: 'select_account' });
 
-// Flag to indicate if we are in the middle of a sign-in flow.
+// Flag to indicate if we are in the middle of a web sign-in flow.
 let isSigningIn = false;
-// Cache the OAuth access token in memory ONLY (never persist to localStorage/sessionStorage).
+// Cache OAuth tokens strictly in memory ONLY (never persist access/refresh tokens to localStorage/sessionStorage).
 let cachedAccessToken: string | null = null;
+let cachedRefreshToken: string | null = null;
+let cachedTokenExpiresAt = 0;
+
+// Ephemeral PKCE handshake state (verifier + CSRF state only; cleared immediately upon callback).
+const PKCE_HANDSHAKE_KEY = 'eink_oauth_pkce_handshake';
+let inMemoryPkceHandshake: { codeVerifier: string; state: string; createdAt: number } | null = null;
+
+export function getAndroidOAuthClientId(): string {
+  const fromEnv = (import.meta.env.VITE_ANDROID_OAUTH_CLIENT_ID || '').trim();
+  if (fromEnv) return fromEnv;
+  return (androidOAuthConfig.androidOAuthClientId || '').trim();
+}
+
+export function isAndroidNativeOAuthConfigured(): boolean {
+  const cid = getAndroidOAuthClientId();
+  return cid.endsWith('.apps.googleusercontent.com') && cid.length > 30;
+}
+
+export function getAndroidRedirectUri(clientId: string = getAndroidOAuthClientId()): string {
+  const cleaned = clientId.trim();
+  const suffix = '.apps.googleusercontent.com';
+  if (cleaned.endsWith(suffix)) {
+    const prefix = cleaned.slice(0, -suffix.length);
+    return `com.googleusercontent.apps.${prefix}:/oauth2redirect`;
+  }
+  return 'tw.eink.clockdashboard.oauth:/oauth2redirect';
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function generateRandomBase64Url(byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return base64UrlEncode(bytes);
+}
+
+async function sha256Base64Url(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
+function savePkceHandshake(handshake: { codeVerifier: string; state: string; createdAt: number }): void {
+  inMemoryPkceHandshake = handshake;
+  try {
+    sessionStorage.setItem(PKCE_HANDSHAKE_KEY, JSON.stringify(handshake));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function consumePkceHandshake(): { codeVerifier: string; state: string; createdAt: number } | null {
+  let handshake = inMemoryPkceHandshake;
+  inMemoryPkceHandshake = null;
+  if (!handshake) {
+    try {
+      const raw = sessionStorage.getItem(PKCE_HANDSHAKE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as {
+          codeVerifier?: string;
+          state?: string;
+          createdAt?: number;
+        };
+        if (parsed.codeVerifier && parsed.state) {
+          handshake = {
+            codeVerifier: parsed.codeVerifier,
+            state: parsed.state,
+            createdAt: parsed.createdAt || Date.now(),
+          };
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  try {
+    sessionStorage.removeItem(PKCE_HANDSHAKE_KEY);
+  } catch {
+    // ignore
+  }
+  return handshake;
+}
+
+/**
+ * Initiates native Android OAuth 2.0 + PKCE sign-in by launching the system browser
+ * (BOOX NeoBrowser / Chrome / etc. — no GMS required). Google redirects back to
+ * `com.googleusercontent.apps.<clientIdPrefix>:/oauth2redirect` which Android routes
+ * straight back into our running Cordova APK via EInkOAuthPlugin.onNewIntent().
+ */
+export async function startAndroidNativeGoogleSignIn(): Promise<void> {
+  const clientId = getAndroidOAuthClientId();
+  if (!isAndroidNativeOAuthConfigured()) {
+    throw new Error(
+      '尚未設定 Android OAuth 用戶端 ID，請先於 Google Cloud Console 建立 Android 類型用戶端並寫入 android-oauth-config.json 後重新打包 APK。'
+    );
+  }
+
+  const codeVerifier = generateRandomBase64Url(32);
+  const codeChallenge = await sha256Base64Url(codeVerifier);
+  const state = generateRandomBase64Url(18);
+  const redirectUri = getAndroidRedirectUri(clientId);
+
+  savePkceHandshake({ codeVerifier, state, createdAt: Date.now() });
+
+  const authParams = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: GOOGLE_WORKSPACE_SCOPES.join(' '),
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
+    state,
+    access_type: 'offline',
+    prompt: 'select_account consent',
+  });
+
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${authParams.toString()}`;
+
+  if (window.EInkOAuth && typeof window.EInkOAuth.openAuthUrl === 'function') {
+    await new Promise<void>((resolve, reject) => {
+      window.EInkOAuth!.openAuthUrl(
+        authUrl,
+        () => resolve(),
+        (err) => reject(new Error(typeof err === 'string' ? err : '無法開啟系統瀏覽器進行 Google 登入'))
+      );
+    });
+    return;
+  }
+
+  // Fallback for environments where Cordova plugin bridge isn't ready yet
+  window.location.href = authUrl;
+}
+
+async function exchangeAndroidAuthCode(callbackUrl: string): Promise<{
+  account: GoogleAccountProfile;
+  accessToken: string;
+}> {
+  let parsed: URL;
+  try {
+    parsed = new URL(callbackUrl);
+  } catch {
+    throw new Error('Google 登入返回網址格式無效，請再試一次。');
+  }
+
+  const errorCode = parsed.searchParams.get('error');
+  if (errorCode) {
+    consumePkceHandshake();
+    if (errorCode === 'access_denied') {
+      throw new Error('您已取消 Google 帳號授權。');
+    }
+    throw new Error(`Google 授權未完成（${errorCode}），請再試一次。`);
+  }
+
+  const code = parsed.searchParams.get('code');
+  const returnedState = parsed.searchParams.get('state');
+  const handshake = consumePkceHandshake();
+
+  if (!code) {
+    throw new Error('未收到 Google 授權碼，請重新點選登入。');
+  }
+  if (!handshake || !returnedState || returnedState !== handshake.state) {
+    throw new Error('安全驗證碼（state）不符或已逾時，請重新點選 Sign in with Google。');
+  }
+
+  const clientId = getAndroidOAuthClientId();
+  const redirectUri = getAndroidRedirectUri(clientId);
+
+  const tokenBody = new URLSearchParams({
+    client_id: clientId,
+    code,
+    code_verifier: handshake.codeVerifier,
+    redirect_uri: redirectUri,
+    grant_type: 'authorization_code',
+  });
+
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: tokenBody.toString(),
+  });
+
+  const data = (await res.json().catch(() => ({}))) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    error?: string;
+    error_description?: string;
+  };
+
+  if (!res.ok || !data.access_token) {
+    throw new Error(
+      data.error_description || data.error || `Google 憑證交換失敗 (HTTP ${res.status})`
+    );
+  }
+
+  cachedAccessToken = data.access_token;
+  if (data.refresh_token) {
+    cachedRefreshToken = data.refresh_token;
+  }
+  const expiresInSec = typeof data.expires_in === 'number' ? data.expires_in : 3600;
+  cachedTokenExpiresAt = Date.now() + Math.max(60, expiresInSec - 120) * 1000;
+
+  return {
+    account: {
+      email: 'Google 帳號（已授權）',
+      displayName: null,
+      authMode: 'android-native',
+    },
+    accessToken: cachedAccessToken,
+  };
+}
+
+/**
+ * Registers the Cordova deep-link callback listener so Android automatically delivers
+ * `com.googleusercontent.apps.<prefix>:/oauth2redirect?code=...` back to the app.
+ */
+export function initAndroidNativeOAuthListener(
+  onAuthSuccess: (account: GoogleAccountProfile, token: string) => void,
+  onAuthError: (message: string) => void
+): () => void {
+  let active = true;
+  let listenerBound = false;
+
+  const handleCallbackUrl = async (url: string) => {
+    if (!active || !url) return;
+    try {
+      const result = await exchangeAndroidAuthCode(url);
+      if (active) {
+        onAuthSuccess(result.account, result.accessToken);
+      }
+    } catch (err) {
+      if (active) {
+        onAuthError(err instanceof Error ? err.message : 'Google 登入失敗');
+      }
+    }
+  };
+
+  const bindBridge = () => {
+    if (!active || listenerBound) return;
+    if (!window.EInkOAuth || typeof window.EInkOAuth.listen !== 'function') return;
+    listenerBound = true;
+    window.EInkOAuth.listen(
+      (url) => {
+        void handleCallbackUrl(url);
+      },
+      (err) => {
+        if (active && err) {
+          onAuthError(typeof err === 'string' ? err : '監聽 Google 登入回呼失敗');
+        }
+      }
+    );
+  };
+
+  bindBridge();
+  document.addEventListener('deviceready', bindBridge, false);
+  window.addEventListener('eink-cordova-ready', bindBridge);
+
+  return () => {
+    active = false;
+    document.removeEventListener('deviceready', bindBridge, false);
+    window.removeEventListener('eink-cordova-ready', bindBridge);
+  };
+}
+
+/**
+ * Silently refreshes the in-memory Android OAuth access token using the in-memory
+ * refresh token when approaching expiry (keeps 24/7 E-Ink desk clock running nonstop).
+ */
+export async function refreshAndroidGoogleTokenIfNeeded(force = false): Promise<string | null> {
+  if (!cachedRefreshToken) return cachedAccessToken;
+  if (!force && cachedAccessToken && Date.now() < cachedTokenExpiresAt) {
+    return cachedAccessToken;
+  }
+
+  const clientId = getAndroidOAuthClientId();
+  if (!clientId) return cachedAccessToken;
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    refresh_token: cachedRefreshToken,
+    grant_type: 'refresh_token',
+  });
+
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+
+  if (!res.ok) {
+    cachedAccessToken = null;
+    cachedRefreshToken = null;
+    cachedTokenExpiresAt = 0;
+    throw new GoogleAuthExpiredError();
+  }
+
+  const data = (await res.json().catch(() => ({}))) as {
+    access_token?: string;
+    expires_in?: number;
+  };
+
+  if (!data.access_token) {
+    cachedAccessToken = null;
+    throw new GoogleAuthExpiredError();
+  }
+
+  cachedAccessToken = data.access_token;
+  const expiresInSec = typeof data.expires_in === 'number' ? data.expires_in : 3600;
+  cachedTokenExpiresAt = Date.now() + Math.max(60, expiresInSec - 120) * 1000;
+  return cachedAccessToken;
+}
 
 export function initGoogleAuth(
-  onAuthSuccess?: (user: User, token: string) => void,
-  onAuthFailure?: (signedInUserWithoutToken: User | null) => void
+  onAuthSuccess?: (account: GoogleAccountProfile, token: string) => void,
+  onAuthFailure?: (signedInAccountWithoutToken: GoogleAccountProfile | null) => void
 ): () => void {
   return onAuthStateChanged(auth, (user: User | null) => {
     if (user) {
+      const profile: GoogleAccountProfile = {
+        email: user.email || 'Google 帳號',
+        displayName: user.displayName,
+        authMode: 'web-firebase',
+      };
       if (cachedAccessToken) {
-        onAuthSuccess?.(user, cachedAccessToken);
+        onAuthSuccess?.(profile, cachedAccessToken);
       } else if (!isSigningIn) {
         cachedAccessToken = null;
-        onAuthFailure?.(user);
+        onAuthFailure?.(profile);
       }
-    } else {
+    } else if (!cachedRefreshToken) {
       cachedAccessToken = null;
       onAuthFailure?.(null);
     }
@@ -77,7 +433,7 @@ function mapFirebaseAuthError(error: unknown): string {
     return '瀏覽器封鎖了 Google 登入彈出視窗，請允許彈出視窗後再試一次。';
   }
   if (code === 'auth/unauthorized-domain') {
-    return '目前執行環境的網域未授權 Google 登入（若是 Android 獨立 APK 內嵌視窗，請改用電子紙瀏覽器開啟本頁，或使用下方 .ics 網址方式同步）。';
+    return '目前執行環境的網域未授權 Google 登入，請改用網頁版瀏覽器開啟或使用下方 .ics 網址方式同步。';
   }
   if (code === 'auth/network-request-failed') {
     return '網路連線異常，無法連線至 Google 驗證服務。';
@@ -88,7 +444,10 @@ function mapFirebaseAuthError(error: unknown): string {
   return 'Google 登入失敗，請稍後再試。';
 }
 
-export async function googleSignIn(): Promise<{ user: User; accessToken: string }> {
+export async function googleSignIn(): Promise<{
+  account: GoogleAccountProfile;
+  accessToken: string;
+}> {
   try {
     isSigningIn = true;
     const result = await signInWithPopup(auth, provider);
@@ -98,7 +457,17 @@ export async function googleSignIn(): Promise<{ user: User; accessToken: string 
     }
 
     cachedAccessToken = credential.accessToken;
-    return { user: result.user, accessToken: cachedAccessToken };
+    cachedRefreshToken = null;
+    cachedTokenExpiresAt = Date.now() + 50 * 60 * 1000;
+
+    return {
+      account: {
+        email: result.user.email || 'Google 帳號',
+        displayName: result.user.displayName,
+        authMode: 'web-firebase',
+      },
+      accessToken: cachedAccessToken,
+    };
   } catch (error) {
     throw new Error(mapFirebaseAuthError(error));
   } finally {
@@ -112,11 +481,30 @@ export async function getGoogleAccessToken(): Promise<string | null> {
 
 export function clearGoogleAccessToken(): void {
   cachedAccessToken = null;
+  cachedRefreshToken = null;
+  cachedTokenExpiresAt = 0;
 }
 
 export async function googleLogout(): Promise<void> {
+  const tokenToRevoke = cachedRefreshToken || cachedAccessToken;
   cachedAccessToken = null;
-  await auth.signOut();
+  cachedRefreshToken = null;
+  cachedTokenExpiresAt = 0;
+
+  if (tokenToRevoke) {
+    fetch(
+      `https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(tokenToRevoke)}`,
+      { method: 'POST' }
+    ).catch(() => {
+      // ignore revoke network failure
+    });
+  }
+
+  try {
+    await auth.signOut();
+  } catch {
+    // ignore if signed in via Android native OAuth without Firebase session
+  }
 }
 
 function pad2(n: number): string {
@@ -145,7 +533,7 @@ interface RawGoogleCalendarEvent {
 export async function fetchGoogleCalendarEvents(
   accessToken: string,
   referenceNow: Date = new Date()
-): Promise<CalendarEventItem[]> {
+): Promise<GoogleCalendarFetchResult> {
   const windowStart = new Date(referenceNow.getFullYear(), referenceNow.getMonth(), 1, 0, 0, 0, 0);
   const windowEnd = new Date(referenceNow.getTime() + 62 * 24 * 60 * 60 * 1000);
 
@@ -177,7 +565,12 @@ export async function fetchGoogleCalendarEvents(
     throw new Error(`無法讀取 Google 日曆活動 (HTTP ${res.status})`);
   }
 
-  const data = (await res.json()) as { items?: RawGoogleCalendarEvent[] };
+  const data = (await res.json()) as {
+    summary?: string;
+    items?: RawGoogleCalendarEvent[];
+  };
+  const calendarEmail =
+    typeof data.summary === 'string' && data.summary.includes('@') ? data.summary.trim() : null;
   const rawItems = Array.isArray(data.items) ? data.items : [];
   const results: CalendarEventItem[] = [];
 
@@ -187,7 +580,6 @@ export async function fetchGoogleCalendarEvents(
     const baseId = item.id || `${summary}-${Math.random().toString(36).slice(2, 8)}`;
 
     if (item.start?.date) {
-      // All-day event (may span multiple days; end.date is exclusive in Google Calendar API)
       const startDay = parseDateOnlyLocal(item.start.date);
       if (!startDay) continue;
       const endDayExclusive = item.end?.date ? parseDateOnlyLocal(item.end.date) : null;
@@ -237,7 +629,7 @@ export async function fetchGoogleCalendarEvents(
   }
 
   results.sort((a, b) => a.date.getTime() - b.date.getTime());
-  return results;
+  return { events: results, calendarEmail };
 }
 
 interface RawGoogleTaskList {
@@ -321,8 +713,6 @@ export async function fetchGoogleTasks(
         const title = (t.title || '').trim();
         if (!title) continue;
 
-        // Google Tasks `due` is RFC 3339 date-only UTC midnight (YYYY-MM-DDT00:00:00.000Z).
-        // Parse the YYYY-MM-DD part directly into local midnight to avoid timezone day shift.
         const dueDate = t.due ? parseDateOnlyLocal(t.due) : null;
         const isOverdue = Boolean(dueDate && dueDate < startOfToday);
         const dueLabel = dueDate
