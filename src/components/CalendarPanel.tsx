@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarDays, CheckSquare, ChevronLeft, ChevronRight, Maximize2, X } from 'lucide-react';
 import {
   getMonthCalendarCells,
@@ -44,7 +44,7 @@ type EventModalMode = 'day' | 'all' | 'tasks' | null;
 
 const WEEKDAY_HEADERS = ['日', '一', '二', '三', '四', '五', '六'];
 
-export function CalendarPanel({
+function CalendarPanelBase({
   today,
   events,
   tasks,
@@ -1115,3 +1115,5 @@ export function CalendarPanel({
     </section>
   );
 }
+
+export const CalendarPanel = memo(CalendarPanelBase);

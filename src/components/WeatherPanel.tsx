@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Droplets, KeyRound, RefreshCw, Sunrise, Sunset, Wind } from 'lucide-react';
 import type { AqiPayload, CwaWeatherPayload, HourlyForecastItem } from '../types/weather';
 import { WeatherIcon } from './WeatherIcons';
@@ -401,7 +401,7 @@ function HourlyChart({
   );
 }
 
-export function WeatherPanel({
+function WeatherPanelBase({
   townName,
   weather,
   aqi,
@@ -667,3 +667,5 @@ export function WeatherPanel({
     </section>
   );
 }
+
+export const WeatherPanel = memo(WeatherPanelBase);

@@ -155,12 +155,6 @@
       (function () {
         function enableEinkDisplayMode() {
           try {
-            if (window.plugins && window.plugins.insomnia && typeof window.plugins.insomnia.keepAwake === 'function') {
-              window.plugins.insomnia.keepAwake();
-            }
-          } catch (e) {}
-
-          try {
             if (window.AndroidFullScreen && typeof window.AndroidFullScreen.immersiveMode === 'function') {
               window.AndroidFullScreen.immersiveMode();
             }

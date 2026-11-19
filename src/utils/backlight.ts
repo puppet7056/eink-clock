@@ -104,7 +104,7 @@ export function computeTargetBacklight(
       isNightNow,
       isExtremePowerSave: true,
       shortLabel: '極致省電',
-      detailLabel: '完全無背光（0%），同步週期降為每 30 分鐘以延長續航',
+      detailLabel: '完全無背光（0%），可搭配下方「進階續航與休眠開關」進一步延長續航',
     };
   }
 

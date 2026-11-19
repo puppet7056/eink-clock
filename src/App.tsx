@@ -20,6 +20,7 @@ import {
   LogOut,
   Monitor,
   Moon,
+  Power,
   RefreshCw,
   Settings,
   Smartphone,
@@ -80,6 +81,17 @@ import {
   type GoogleTaskItem,
 } from './utils/googleWorkspace';
 import { parseGoogleICalEvents } from './utils/icalParser';
+import {
+  applyHardwareKeepAwake,
+  evaluatePowerState,
+  loadPowerSettings,
+  MAX_BATTERY_POWER_PRESET,
+  savePowerSettings,
+  shouldTriggerGhostCleanAt,
+  type GhostCleanIntervalMinutes,
+  type PowerSettings,
+  type SyncIntervalMinutes,
+} from './utils/powerSettings';
 import { getTaiwanDayInfo } from './utils/taiwanCalendar';
 
 type OrientationMode = 'auto' | 'portrait' | 'landscape';
@@ -269,8 +281,9 @@ export default function App() {
   // 4.3 吋小螢幕（閱星瞳 XTEINK X4）雙頁切換：0 = 時鐘與天氣、1 = 農曆日曆與行程
   const [compactPage, setCompactPage] = useState<0 | 1>(0);
 
-  // 背光與極致省電設定（完全儲存在本機）
+  // 背光與進階續航／休眠設定（完全儲存在本機）
   const [backlight, setBacklight] = useState<BacklightSettings>(() => loadBacklightSettings());
+  const [powerSettings, setPowerSettings] = useState<PowerSettings>(() => loadPowerSettings());
 
   // 私人 API 金鑰與個人日曆網址：一律僅儲存於本機 localStorage，絕不寫死或打包進 APK
   const [cwaApiKey, setCwaApiKey] = useState<string>(() => readStorage('eink_cwa_api_key', ''));
@@ -324,6 +337,7 @@ export default function App() {
   const [draftCwaApiKey, setDraftCwaApiKey] = useState<string>('');
   const [draftStrictKey, setDraftStrictKey] = useState<boolean>(false);
   const [draftBacklight, setDraftBacklight] = useState<BacklightSettings>(backlight);
+  const [draftPowerSettings, setDraftPowerSettings] = useState<PowerSettings>(powerSettings);
   const [draftGithubRepo, setDraftGithubRepo] = useState<string>(githubRepo);
   const [updateCheckState, setUpdateCheckState] = useState<{
     status: 'idle' | 'loading' | 'result' | 'error';
@@ -335,6 +349,7 @@ export default function App() {
   const ghostTimersRef = useRef<number[]>([]);
   const swipeOriginRef = useRef<{ x: number; y: number } | null>(null);
   const prevOnlineRef = useRef<boolean>(true);
+  const lastSyncAtRef = useRef<number>(0);
   const deviceStatus = useDeviceStatus();
   const townPreset = useMemo(() => findTownPreset(townId), [townId]);
 
@@ -374,19 +389,31 @@ export default function App() {
     [backlight, now, weather?.today.sunrise, weather?.today.sunset]
   );
 
+  // 計算當下進階省電與休眠排程狀態（常亮鎖 / 夜間自動休眠 / 同步與全刷週期 / 純離線模式）
+  const powerEval = useMemo(
+    () => evaluatePowerState(powerSettings, now),
+    [powerSettings, now]
+  );
+
   // 套用硬體背光（Cordova Android 支援前光機型自動控制，無前光機型與瀏覽器安全略過）
   useEffect(() => {
     applyHardwareBacklight(backlightEval.brightnessValue);
   }, [backlightEval.brightnessValue]);
 
-  // 監聽 Cordova deviceready / resume 以確保喚醒後立即套用背光設定
+  // 動態控制防休眠鎖（夜間自動休眠時段或使用者關閉常亮時自動呼叫 allowSleepAgain 釋放 WakeLock）
+  useEffect(() => {
+    applyHardwareKeepAwake(powerEval.shouldKeepAwake);
+  }, [powerEval.shouldKeepAwake]);
+
+  // 監聽 Cordova deviceready / resume 以確保喚醒後立即套用背光與防休眠狀態
   useEffect(() => {
     const handleCordovaReady = () => {
       applyHardwareBacklight(backlightEval.brightnessValue);
+      applyHardwareKeepAwake(powerEval.shouldKeepAwake);
     };
     window.addEventListener('eink-cordova-ready', handleCordovaReady);
     return () => window.removeEventListener('eink-cordova-ready', handleCordovaReady);
-  }, [backlightEval.brightnessValue]);
+  }, [backlightEval.brightnessValue, powerEval.shouldKeepAwake]);
 
   // 監聽視窗尺寸變化
   useEffect(() => {
@@ -776,7 +803,7 @@ export default function App() {
 
   // 抓取 Google 日曆活動與 Google 待辦工作（優先使用已登入之 Google 帳號，未登入時自動退回本機 .ics 網址）
   const fetchCalendar = useCallback(async () => {
-    const syncCadenceMin = backlightEval.isExtremePowerSave ? 30 : 15;
+    const syncCadenceMin = powerEval.effectiveSyncMinutes;
     const currentNow = new Date();
     const startOfToday = new Date(
       currentNow.getFullYear(),
@@ -858,7 +885,7 @@ export default function App() {
     if (!icalUrl.trim()) {
       setEvents([]);
       setCalendarError(null);
-      setSyncStatus(`每${syncCadenceMin}分同步`);
+      setSyncStatus(syncCadenceMin > 0 ? `每${syncCadenceMin}分同步` : '手動同步');
       return;
     }
 
@@ -879,15 +906,21 @@ export default function App() {
       setCalendarError(msg);
       setSyncStatus('日曆同步異常');
     }
-  }, [googleToken, googleUser?.authMode, icalUrl, backlightEval.isExtremePowerSave]);
+  }, [googleToken, googleUser?.authMode, icalUrl, powerEval.effectiveSyncMinutes]);
 
-  // 時鐘對齊整分鐘更新
+  // 時鐘對齊整分鐘更新，並依使用者設定頻率執行清殘影全刷（夜間休眠／背景隱藏時不閃屏）
+  const powerSettingsRef = useRef<PowerSettings>(powerSettings);
+  useEffect(() => {
+    powerSettingsRef.current = powerSettings;
+  }, [powerSettings]);
+
   useEffect(() => {
     const tick = (allowClean: boolean) => {
       const current = new Date();
       setNow(current);
-      const mins = current.getMinutes();
-      if (allowClean && (mins === 0 || mins === 30)) {
+      if (!allowClean || document.hidden) return;
+      const evaluated = evaluatePowerState(powerSettingsRef.current, current);
+      if (shouldTriggerGhostCleanAt(current, evaluated.effectiveGhostCleanMinutes)) {
         forceFullRefresh();
       }
     };
@@ -906,28 +939,84 @@ export default function App() {
     };
   }, [forceFullRefresh]);
 
-  // 天氣與日曆排程更新（極致省電模式降頻為 30 分鐘，一般模式 15 分鐘）
+  // 天氣與日曆排程更新（支援自訂 15/30/60/120 分鐘、僅手動、夜間休眠暫停與純離線模式）
   useEffect(() => {
-    fetchWeatherAndAQI();
-    fetchCalendar();
-    const intervalMs = (backlightEval.isExtremePowerSave ? 30 : 15) * 60 * 1000;
-    const interval = window.setInterval(() => {
+    const runSync = () => {
+      if (document.hidden) return;
+      lastSyncAtRef.current = Date.now();
       fetchWeatherAndAQI();
       fetchCalendar();
-    }, intervalMs);
-    return () => window.clearInterval(interval);
-  }, [fetchWeatherAndAQI, fetchCalendar, backlightEval.isExtremePowerSave]);
+    };
 
-  // 網路從離線恢復連線時自動同步最新氣象與行程
+    if (powerSettings.offlineClockMode || powerEval.isNightSleepActive) {
+      setSyncStatus(powerSettings.offlineClockMode ? '離線省電模式' : '夜間休眠暫停同步');
+      return;
+    }
+
+    // 首次啟動或設定變更時抓取一次最新資料
+    runSync();
+
+    if (powerEval.effectiveSyncMinutes <= 0) {
+      return;
+    }
+
+    const intervalMs = powerEval.effectiveSyncMinutes * 60 * 1000;
+    const interval = window.setInterval(runSync, intervalMs);
+    return () => window.clearInterval(interval);
+  }, [
+    fetchWeatherAndAQI,
+    fetchCalendar,
+    powerSettings.offlineClockMode,
+    powerEval.isNightSleepActive,
+    powerEval.effectiveSyncMinutes,
+  ]);
+
+  // 從休眠／背景喚醒回到前景時，立即校正時間並在超過同步週期後補抓最新氣象與行程
   useEffect(() => {
-    if (!prevOnlineRef.current && deviceStatus.isOnline) {
+    const handleVisibilityChange = () => {
+      if (document.hidden) return;
+      setNow(new Date());
+      if (powerSettings.offlineClockMode || powerEval.isNightSleepActive) return;
+      if (powerEval.effectiveSyncMinutes <= 0) return;
+      const minElapsedMs = Math.max(5, powerEval.effectiveSyncMinutes) * 60 * 1000;
+      if (Date.now() - lastSyncAtRef.current >= minElapsedMs) {
+        lastSyncAtRef.current = Date.now();
+        fetchWeatherAndAQI();
+        fetchCalendar();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [
+    fetchWeatherAndAQI,
+    fetchCalendar,
+    powerSettings.offlineClockMode,
+    powerEval.isNightSleepActive,
+    powerEval.effectiveSyncMinutes,
+  ]);
+
+  // 網路從離線恢復連線時自動同步最新氣象與行程（純離線模式與夜間休眠時略過）
+  useEffect(() => {
+    if (
+      !prevOnlineRef.current &&
+      deviceStatus.isOnline &&
+      !powerSettings.offlineClockMode &&
+      !powerEval.isNightSleepActive
+    ) {
+      lastSyncAtRef.current = Date.now();
       fetchWeatherAndAQI();
       fetchCalendar();
     }
     prevOnlineRef.current = deviceStatus.isOnline;
-  }, [deviceStatus.isOnline, fetchWeatherAndAQI, fetchCalendar]);
+  }, [
+    deviceStatus.isOnline,
+    fetchWeatherAndAQI,
+    fetchCalendar,
+    powerSettings.offlineClockMode,
+    powerEval.isNightSleepActive,
+  ]);
 
-  const openSettings = () => {
+  const openSettings = useCallback(() => {
     setDraftIcalUrl(icalUrl);
     setIcalTestState(
       calendarError
@@ -941,11 +1030,24 @@ export default function App() {
     setDraftCwaApiKey(cwaApiKey);
     setDraftStrictKey(strictApiKeyOnly);
     setDraftBacklight(backlight);
+    setDraftPowerSettings(powerSettings);
     setDraftGithubRepo(githubRepo);
     setUpdateCheckState({ status: 'idle' });
     setShowCwaKey(false);
     setIsSettingsOpen(true);
-  };
+  }, [
+    icalUrl,
+    calendarError,
+    townId,
+    deviceProfile,
+    orientationMode,
+    fontScale,
+    cwaApiKey,
+    strictApiKeyOnly,
+    backlight,
+    powerSettings,
+    githubRepo,
+  ]);
 
   const handleCheckAppUpdate = async () => {
     const repoInput = draftGithubRepo.trim() || DEFAULT_GITHUB_REPO;
@@ -1023,6 +1125,7 @@ export default function App() {
     setCwaApiKey(cleanedCwaKey);
     setStrictApiKeyOnly(draftStrictKey);
     setBacklight(draftBacklight);
+    setPowerSettings(draftPowerSettings);
     setGithubRepo(cleanedRepo);
 
     writeStorage('eink_ical_url', cleanedIcal);
@@ -1034,6 +1137,7 @@ export default function App() {
     writeStorage('eink_strict_api_key', String(draftStrictKey));
     writeStorage('eink_github_repo', cleanedRepo);
     saveBacklightSettings(draftBacklight);
+    savePowerSettings(draftPowerSettings);
 
     setIcalTestState({ status: 'idle', message: '' });
     setIsSettingsOpen(false);
@@ -1050,7 +1154,19 @@ export default function App() {
     [draftBacklight, now, weather?.today.sunrise, weather?.today.sunset]
   );
 
-  const todayInfo = useMemo(() => getTaiwanDayInfo(now), [now]);
+  const draftPowerPreview = useMemo(
+    () => evaluatePowerState(draftPowerSettings, now),
+    [draftPowerSettings, now]
+  );
+
+  // 依「年月日」穩定化 todayDate，確保每分鐘跳動時不觸發 CalendarPanel 重繪（大幅降低 CPU 喚醒耗電）
+  const todayKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
+  const todayDate = useMemo(
+    () => new Date(now.getFullYear(), now.getMonth(), now.getDate()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [todayKey]
+  );
+  const todayInfo = useMemo(() => getTaiwanDayInfo(todayDate), [todayDate]);
   const timeDisplay = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   const dateDisplay = isCompact4
     ? `${todayInfo.month}/${todayInfo.day}（${todayInfo.weekdayLabel}）`
@@ -1428,7 +1544,7 @@ export default function App() {
               /* 第 2 頁：全畫面農曆月曆與行程 */
               <main className={`flex-1 flex flex-col ${isCompact4 ? 'pt-2' : 'pt-3'} min-h-0 overflow-hidden`}>
                 <CalendarPanel
-                  today={now}
+                  today={todayDate}
                   events={events}
                   tasks={tasks}
                   hasIcalUrl={Boolean(icalUrl)}
@@ -1529,8 +1645,7 @@ export default function App() {
                         : `農曆 ${todayInfo.lunarMonthText}${todayInfo.lunarDayText}`}
                   </span>
                   <span className="text-[length:calc(12.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
-                    {backlightEval.shortLabel}
-                    {backlightEval.isExtremePowerSave ? ' · 30分更新' : ''}
+                    {backlightEval.shortLabel} · {powerEval.summaryText}
                   </span>
                 </div>
               </div>
@@ -1556,7 +1671,7 @@ export default function App() {
             {/* 右欄：農曆與國定假日月曆 / 近期日程 */}
             <div className="flex flex-col min-h-0 overflow-hidden">
               <CalendarPanel
-                today={now}
+                today={todayDate}
                 events={events}
                 tasks={tasks}
                 hasIcalUrl={Boolean(icalUrl)}
@@ -1602,7 +1717,7 @@ export default function App() {
             {/* 農曆與國定假日月曆 / 近期日程 */}
             <div className="flex-1 pt-3 min-h-[270px] flex flex-col">
               <CalendarPanel
-                today={now}
+                today={todayDate}
                 events={events}
                 tasks={tasks}
                 hasIcalUrl={Boolean(icalUrl)}
@@ -1882,6 +1997,223 @@ export default function App() {
                   />
                 </div>
               )}
+
+              {/* 進階續航與休眠控制（每項皆可獨立開關） */}
+              <div className="flex flex-col gap-2.5 mt-1 bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[8px] p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-[length:calc(14px*var(--fs))] font-black">
+                    <Power className="w-[1em] h-[1em] shrink-0" />
+                    <span>進階續航與休眠開關</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftBacklight((prev) => ({ ...prev, mode: 'off' }));
+                      setDraftPowerSettings({ ...MAX_BATTERY_POWER_PRESET });
+                    }}
+                    className="px-2.5 py-1 text-[length:calc(12px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer active:bg-[var(--surface-active)] active:text-[var(--fg-inverse)]"
+                  >
+                    一鍵套用長續航建議
+                  </button>
+                </div>
+
+                <p className="text-[length:calc(12px*var(--fs))] font-bold text-[var(--fg-muted)] font-num">
+                  目前設定預覽：{draftPowerPreview.summaryText}
+                </p>
+
+                {/* 開關 1：螢幕常亮（防休眠鎖） */}
+                <label className="flex items-start gap-2 text-[length:calc(12.5px*var(--fs))] font-bold cursor-pointer leading-[1.45]">
+                  <input
+                    type="checkbox"
+                    checked={draftPowerSettings.keepScreenAwake}
+                    onChange={(e) =>
+                      setDraftPowerSettings((prev) => ({
+                        ...prev,
+                        keepScreenAwake: e.target.checked,
+                      }))
+                    }
+                    className="w-[1.15em] h-[1.15em] mt-0.5 shrink-0 accent-[var(--fg-color)]"
+                  />
+                  <span>
+                    啟用螢幕常亮（防止閱讀器自動休眠）
+                    <span className="block text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
+                      取消勾選則完全交由閱讀器系統的「自動休眠時間」接管，最省電。
+                    </span>
+                  </span>
+                </label>
+
+                {/* 開關 2：夜間自動休眠排程 */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="flex items-start gap-2 text-[length:calc(12.5px*var(--fs))] font-bold cursor-pointer leading-[1.45]">
+                    <input
+                      type="checkbox"
+                      checked={draftPowerSettings.nightSleepEnabled}
+                      onChange={(e) =>
+                        setDraftPowerSettings((prev) => ({
+                          ...prev,
+                          nightSleepEnabled: e.target.checked,
+                        }))
+                      }
+                      className="w-[1.15em] h-[1.15em] mt-0.5 shrink-0 accent-[var(--fg-color)]"
+                    />
+                    <span>
+                      夜間自動休眠排程（推薦：睡覺時段自動釋放常亮鎖，讓 Android 進入深度省電並暫停同步與全刷）
+                    </span>
+                  </label>
+
+                  {draftPowerSettings.nightSleepEnabled && (
+                    <div className="flex flex-wrap items-center gap-2 pl-6 text-[length:calc(12.5px*var(--fs))] font-bold">
+                      <span>休眠時段：</span>
+                      <select
+                        aria-label="夜間休眠開始時間"
+                        value={draftPowerSettings.nightSleepStartHour}
+                        onChange={(e) =>
+                          setDraftPowerSettings((prev) => ({
+                            ...prev,
+                            nightSleepStartHour: Number(e.target.value),
+                          }))
+                        }
+                        className="px-2 py-1 text-[length:calc(12.5px*var(--fs))] border border-[var(--border-color)] rounded bg-[var(--bg-color)] text-[var(--fg-color)] font-num"
+                      >
+                        {Array.from({ length: 24 }, (_, h) => (
+                          <option key={h} value={h}>
+                            {String(h).padStart(2, '0')}:00
+                          </option>
+                        ))}
+                      </select>
+                      <span>～</span>
+                      <select
+                        aria-label="夜間休眠結束時間"
+                        value={draftPowerSettings.nightSleepEndHour}
+                        onChange={(e) =>
+                          setDraftPowerSettings((prev) => ({
+                            ...prev,
+                            nightSleepEndHour: Number(e.target.value),
+                          }))
+                        }
+                        className="px-2 py-1 text-[length:calc(12.5px*var(--fs))] border border-[var(--border-color)] rounded bg-[var(--bg-color)] text-[var(--fg-color)] font-num"
+                      >
+                        {Array.from({ length: 24 }, (_, h) => (
+                          <option key={h} value={h}>
+                            {String(h).padStart(2, '0')}:00
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+
+                {/* 開關 3：純離線省電模式 */}
+                <label className="flex items-start gap-2 text-[length:calc(12.5px*var(--fs))] font-bold cursor-pointer leading-[1.45]">
+                  <input
+                    type="checkbox"
+                    checked={draftPowerSettings.offlineClockMode}
+                    onChange={(e) =>
+                      setDraftPowerSettings((prev) => ({
+                        ...prev,
+                        offlineClockMode: e.target.checked,
+                      }))
+                    }
+                    className="w-[1.15em] h-[1.15em] mt-0.5 shrink-0 accent-[var(--fg-color)]"
+                  />
+                  <span>
+                    純離線時鐘模式（停用背景氣象與日曆自動同步，搭配關閉 Wi-Fi／藍牙續航最長，仍可手動刷新）
+                  </span>
+                </label>
+
+                {/* 選擇 4：背景同步週期 */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[length:calc(12.5px*var(--fs))] font-extrabold">
+                    氣象與日曆背景同步週期
+                    {draftPowerSettings.offlineClockMode ? '（純離線模式已暫停背景同步）' : ''}：
+                  </span>
+                  <div
+                    role="group"
+                    aria-label="背景同步週期"
+                    className={`grid grid-cols-5 border-[1.5px] border-[var(--border-color)] rounded-[6px] overflow-hidden ${
+                      draftPowerSettings.offlineClockMode ? 'opacity-50' : ''
+                    }`}
+                  >
+                    {(
+                      [
+                        { value: 15, label: '15分' },
+                        { value: 30, label: '30分' },
+                        { value: 60, label: '60分' },
+                        { value: 120, label: '2小時' },
+                        { value: 0, label: '僅手動' },
+                      ] as { value: SyncIntervalMinutes; label: string }[]
+                    ).map((opt, idx) => {
+                      const active = draftPowerSettings.syncIntervalMinutes === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          disabled={draftPowerSettings.offlineClockMode}
+                          onClick={() =>
+                            setDraftPowerSettings((prev) => ({
+                              ...prev,
+                              syncIntervalMinutes: opt.value,
+                            }))
+                          }
+                          className={`py-1.5 px-1 text-[length:calc(12px*var(--fs))] font-extrabold font-num cursor-pointer disabled:cursor-not-allowed ${
+                            idx > 0 ? 'border-l border-[var(--border-color)]' : ''
+                          } ${
+                            active
+                              ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                              : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 選擇 5：電子紙自動清殘影全刷週期 */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[length:calc(12.5px*var(--fs))] font-extrabold">
+                    電子紙自動清殘影全刷頻率（拉長或關閉可減少高壓刷新耗電）：
+                  </span>
+                  <div
+                    role="group"
+                    aria-label="自動清殘影頻率"
+                    className="grid grid-cols-4 border-[1.5px] border-[var(--border-color)] rounded-[6px] overflow-hidden"
+                  >
+                    {(
+                      [
+                        { value: 30, label: '每30分' },
+                        { value: 60, label: '每60分' },
+                        { value: 120, label: '每2小時' },
+                        { value: 0, label: '關閉自動' },
+                      ] as { value: GhostCleanIntervalMinutes; label: string }[]
+                    ).map((opt, idx) => {
+                      const active = draftPowerSettings.ghostCleanIntervalMinutes === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() =>
+                            setDraftPowerSettings((prev) => ({
+                              ...prev,
+                              ghostCleanIntervalMinutes: opt.value,
+                            }))
+                          }
+                          className={`py-1.5 px-1 text-[length:calc(12px*var(--fs))] font-extrabold font-num cursor-pointer ${
+                            idx > 0 ? 'border-l border-[var(--border-color)]' : ''
+                          } ${
+                            active
+                              ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                              : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* 區塊二：個人 API 金鑰與私密網址（僅存於本機，絕不打包進程式碼或 APK） */}
@@ -2262,8 +2594,8 @@ export default function App() {
                   每逢整點（00 分）與半點（30 分）自動全螢幕黑白刷新清除殘影，亦可隨時點擊頂部「清殘影」或切換「淺色／深色」反白顯示。
                 </li>
                 <li>
-                  <span className="font-extrabold">背光與極致省電：</span>
-                  「極致省電 0%」可完全關閉前光並降頻為每 30 分鐘同步；具前光機型可選「夜晚部分背光」依日落／日出自動微亮，無背光機型會安全略過前光指令。
+                  <span className="font-extrabold">背光、續航與休眠排程：</span>
+                  可於設定「進階續航與休眠開關」自由調整螢幕常亮鎖、夜間自動休眠時段（時段內釋放常亮鎖讓系統進入深度休眠）、純離線模式、背景同步週期（15 分～2 小時／僅手動）與自動清殘影頻率，亦可點擊「一鍵套用長續航建議」。
                 </li>
                 <li>
                   <span className="font-extrabold">單一 API Key 與隱私：</span>
