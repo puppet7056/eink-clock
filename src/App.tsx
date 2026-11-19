@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type TouchEvent } from 'react';
 import {
   BatteryCharging,
   BookOpen,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
   Eye,
   EyeOff,
   KeyRound,
@@ -130,11 +134,15 @@ export default function App() {
   });
   const [deviceProfile, setDeviceProfile] = useState<DeviceProfileMode>(() => {
     const saved = readStorage('eink_device_profile', 'auto');
-    return saved === 'phone' || saved === 'reader6' || saved === 'tablet10' ? saved : 'auto';
+    return saved === 'compact4' || saved === 'phone' || saved === 'reader6' || saved === 'tablet10'
+      ? saved
+      : 'auto';
   });
   const [fontScale, setFontScale] = useState<FontScalePreset>(() =>
     parseFontScale(readStorage('eink_font_scale', '100'))
   );
+  // 4.3 吋小螢幕（閱星瞳 XTEINK X4）雙頁切換：0 = 時鐘與天氣、1 = 農曆日曆與行程
+  const [compactPage, setCompactPage] = useState<0 | 1>(0);
 
   // 背光與極致省電設定（完全儲存在本機）
   const [backlight, setBacklight] = useState<BacklightSettings>(() => loadBacklightSettings());
@@ -170,6 +178,7 @@ export default function App() {
   const [draftIcalUrl, setDraftIcalUrl] = useState<string>('');
   const [draftTownId, setDraftTownId] = useState<string>(townId);
   const [draftDeviceProfile, setDraftDeviceProfile] = useState<DeviceProfileMode>(deviceProfile);
+  const [draftOrientationMode, setDraftOrientationMode] = useState<OrientationMode>(orientationMode);
   const [draftFontScale, setDraftFontScale] = useState<FontScalePreset>(fontScale);
   const [draftCwaApiKey, setDraftCwaApiKey] = useState<string>('');
   const [draftStrictKey, setDraftStrictKey] = useState<boolean>(false);
@@ -177,6 +186,7 @@ export default function App() {
   const [showCwaKey, setShowCwaKey] = useState<boolean>(false);
 
   const ghostTimersRef = useRef<number[]>([]);
+  const swipeOriginRef = useRef<{ x: number; y: number } | null>(null);
   const townPreset = useMemo(() => findTownPreset(townId), [townId]);
 
   const systemIsLandscape = viewport.w >= viewport.h;
@@ -184,10 +194,11 @@ export default function App() {
     orientationMode === 'auto' ? (systemIsLandscape ? 'landscape' : 'portrait') : orientationMode;
   const isLandscape = effectiveOrientation === 'landscape';
 
-  // 自動偵測閱讀器尺寸：手機型 (Viwoods) / 6吋原生 / 10.3吋大螢幕 (BOOX)
+  // 自動偵測閱讀器尺寸：4.3吋 (閱星瞳 XTEINK X4) / 手機型 (Viwoods) / 6吋原生 / 10.3吋大螢幕 (BOOX)
   const detectedScale: DeviceScale = useMemo(() => {
     const minSide = Math.min(viewport.w, viewport.h);
     const maxSide = Math.max(viewport.w, viewport.h);
+    if (minSide <= 360 || (minSide < 400 && maxSide <= 680)) return 'compact4';
     if (viewport.w < 460 || minSide < 440) return 'phone';
     if (maxSide >= 860 && minSide >= 600) return 'tablet10';
     return 'reader6';
@@ -195,6 +206,7 @@ export default function App() {
 
   const effectiveDeviceScale: DeviceScale =
     deviceProfile === 'auto' ? detectedScale : deviceProfile;
+  const isCompact4 = effectiveDeviceScale === 'compact4';
 
   // 計算當下目標背光狀態（完全無背光極致省電 / 夜晚部分背光 / 手動 / 系統）
   const backlightEval = useMemo(
@@ -241,6 +253,88 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.fontScale = String(fontScale);
   }, [fontScale]);
+
+  // 4.3 吋（閱星瞳 XTEINK X4）實體翻頁鍵 / 音量鍵 / 方向鍵雙頁切換（支援無觸控機型）
+  useEffect(() => {
+    if (!isCompact4) {
+      setCompactPage(0);
+      return;
+    }
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (isSettingsOpen) return;
+      const targetTag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      const isFormEl = targetTag === 'input' || targetTag === 'select' || targetTag === 'textarea';
+      if (isFormEl) return;
+
+      if (
+        e.key === 'ArrowRight' ||
+        e.key === 'PageDown' ||
+        e.key === 'VolumeDown' ||
+        e.key === 'MediaTrackNext'
+      ) {
+        e.preventDefault();
+        setCompactPage(1);
+      } else if (
+        e.key === 'ArrowLeft' ||
+        e.key === 'PageUp' ||
+        e.key === 'VolumeUp' ||
+        e.key === 'MediaTrackPrevious'
+      ) {
+        e.preventDefault();
+        setCompactPage(0);
+      } else if ((e.key === ' ' || e.key === 'Enter') && targetTag !== 'button') {
+        e.preventDefault();
+        setCompactPage((prev) => (prev === 0 ? 1 : 0));
+      }
+    };
+
+    const handleVolUp = () => {
+      if (!isSettingsOpen) setCompactPage(0);
+    };
+    const handleVolDown = () => {
+      if (!isSettingsOpen) setCompactPage(1);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('volumeupbutton', handleVolUp);
+    document.addEventListener('volumedownbutton', handleVolDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('volumeupbutton', handleVolUp);
+      document.removeEventListener('volumedownbutton', handleVolDown);
+    };
+  }, [isCompact4, isSettingsOpen]);
+
+  const handleCompactTouchStart = (e: TouchEvent<HTMLDivElement>) => {
+    if (!isCompact4 || e.touches.length !== 1) return;
+    swipeOriginRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  };
+
+  const handleCompactTouchEnd = (e: TouchEvent<HTMLDivElement>) => {
+    if (!isCompact4 || !swipeOriginRef.current || e.changedTouches.length !== 1) return;
+    const dx = e.changedTouches[0].clientX - swipeOriginRef.current.x;
+    const dy = e.changedTouches[0].clientY - swipeOriginRef.current.y;
+    swipeOriginRef.current = null;
+    if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      setCompactPage(dx < 0 ? 1 : 0);
+    }
+  };
+
+  const handleCompactPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    if (!isCompact4 || e.pointerType === 'touch') return;
+    swipeOriginRef.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const handleCompactPointerUp = (e: PointerEvent<HTMLDivElement>) => {
+    if (!isCompact4 || e.pointerType === 'touch' || !swipeOriginRef.current) return;
+    const dx = e.clientX - swipeOriginRef.current.x;
+    const dy = e.clientY - swipeOriginRef.current.y;
+    swipeOriginRef.current = null;
+    if (Math.abs(dx) >= 56 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      setCompactPage(dx < 0 ? 1 : 0);
+    }
+  };
 
   // 電子紙防殘影全螢幕刷新（黑->白->正常）
   const forceFullRefresh = useCallback(() => {
@@ -535,6 +629,7 @@ export default function App() {
     setDraftIcalUrl(icalUrl);
     setDraftTownId(townId);
     setDraftDeviceProfile(deviceProfile);
+    setDraftOrientationMode(orientationMode);
     setDraftFontScale(fontScale);
     setDraftCwaApiKey(cwaApiKey);
     setDraftStrictKey(strictApiKeyOnly);
@@ -556,6 +651,7 @@ export default function App() {
     setIcalUrl(cleanedIcal);
     setTownId(draftTownId);
     setDeviceProfile(draftDeviceProfile);
+    setOrientationMode(draftOrientationMode);
     setFontScale(draftFontScale);
     setCwaApiKey(cleanedCwaKey);
     setStrictApiKeyOnly(draftStrictKey);
@@ -564,6 +660,7 @@ export default function App() {
     writeStorage('eink_ical_url', cleanedIcal);
     writeStorage('eink_town_id', draftTownId);
     writeStorage('eink_device_profile', draftDeviceProfile);
+    writeStorage('eink_orientation', draftOrientationMode);
     writeStorage('eink_font_scale', String(draftFontScale));
     writeStorage('eink_cwa_api_key', cleanedCwaKey);
     writeStorage('eink_strict_api_key', String(draftStrictKey));
@@ -585,10 +682,15 @@ export default function App() {
 
   const todayInfo = useMemo(() => getTaiwanDayInfo(now), [now]);
   const timeDisplay = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  const dateDisplay = `${todayInfo.year}/${todayInfo.month}/${todayInfo.day}（${todayInfo.weekdayLabel}）`;
+  const dateDisplay = isCompact4
+    ? `${todayInfo.month}/${todayInfo.day}（${todayInfo.weekdayLabel}）`
+    : `${todayInfo.year}/${todayInfo.month}/${todayInfo.day}（${todayInfo.weekdayLabel}）`;
 
   const containerWidthClass = useMemo(() => {
     if (!isLandscape && systemIsLandscape && viewport.w >= 820) {
+      if (effectiveDeviceScale === 'compact4') {
+        return 'max-w-[360px] border-x-[2px] border-[var(--border-subtle)] px-2.5 py-2';
+      }
       if (effectiveDeviceScale === 'phone') {
         return 'max-w-[410px] border-x-[2px] border-[var(--border-subtle)] px-3.5 py-3';
       }
@@ -596,6 +698,12 @@ export default function App() {
         return 'max-w-[820px] border-x-[2px] border-[var(--border-subtle)] px-6 py-5';
       }
       return 'max-w-[640px] border-x-[2px] border-[var(--border-subtle)] px-5 py-4';
+    }
+    if (isLandscape && effectiveDeviceScale === 'compact4' && viewport.w >= 820) {
+      return 'max-w-[620px] border-x-[2px] border-[var(--border-subtle)] px-3 py-2';
+    }
+    if (effectiveDeviceScale === 'compact4') {
+      return 'px-2.5 py-2';
     }
     if (effectiveDeviceScale === 'phone') {
       return 'px-3 py-2.5';
@@ -609,7 +717,7 @@ export default function App() {
   const btnClass = `inline-flex items-center gap-1 bg-[var(--bg-color)] text-[var(--fg-color)] border-[1.5px] border-[var(--border-color)] ${
     effectiveDeviceScale === 'tablet10'
       ? 'px-3 py-1.5 text-[length:calc(14px*var(--fs-ctrl))]'
-      : effectiveDeviceScale === 'phone'
+      : effectiveDeviceScale === 'compact4' || effectiveDeviceScale === 'phone'
         ? 'px-1.5 py-1 text-[length:calc(11.5px*var(--fs-ctrl))]'
         : 'px-2.5 py-1 text-[length:calc(12.5px*var(--fs-ctrl))]'
   } font-extrabold rounded-[6px] cursor-pointer whitespace-nowrap shrink-0 active:bg-[var(--surface-active)] active:text-[var(--fg-inverse)]`;
@@ -617,18 +725,29 @@ export default function App() {
   const landscapeClockClass =
     effectiveDeviceScale === 'tablet10'
       ? 'text-[length:min(15.5vw,calc(clamp(92px,9.8vw,148px)*var(--fs-clock)))]'
-      : effectiveDeviceScale === 'phone'
-        ? 'text-[length:min(15vw,calc(clamp(48px,10vw,74px)*var(--fs-clock)))]'
-        : 'text-[length:min(15.5vw,calc(clamp(68px,8.6vw,112px)*var(--fs-clock)))]';
+      : effectiveDeviceScale === 'compact4'
+        ? 'text-[length:min(16vw,calc(clamp(56px,11vw,82px)*var(--fs-clock)))]'
+        : effectiveDeviceScale === 'phone'
+          ? 'text-[length:min(15vw,calc(clamp(48px,10vw,74px)*var(--fs-clock)))]'
+          : 'text-[length:min(15.5vw,calc(clamp(68px,8.6vw,112px)*var(--fs-clock)))]';
 
   const portraitClockClass =
     effectiveDeviceScale === 'tablet10'
       ? 'text-[length:min(25vw,calc(clamp(96px,15vw,160px)*var(--fs-clock)))]'
-      : effectiveDeviceScale === 'phone'
-        ? 'text-[length:min(24vw,calc(clamp(54px,18vw,82px)*var(--fs-clock)))]'
-        : 'text-[length:min(25vw,calc(clamp(68px,16vw,106px)*var(--fs-clock)))]';
+      : effectiveDeviceScale === 'compact4'
+        ? 'text-[length:min(26vw,calc(clamp(66px,21vw,94px)*var(--fs-clock)))]'
+        : effectiveDeviceScale === 'phone'
+          ? 'text-[length:min(24vw,calc(clamp(54px,18vw,82px)*var(--fs-clock)))]'
+          : 'text-[length:min(25vw,calc(clamp(68px,16vw,106px)*var(--fs-clock)))]';
 
   const fontScaleRatio = fontScale / 100;
+  const hideHeaderLabels = effectiveDeviceScale === 'phone' || isCompact4;
+
+  const cycleOrientationCompact = () => {
+    const order: OrientationMode[] = ['auto', 'portrait', 'landscape'];
+    const next = order[(order.indexOf(orientationMode) + 1) % order.length];
+    handleSelectOrientation(next);
+  };
 
   return (
     <div
@@ -648,15 +767,21 @@ export default function App() {
       {/* 主看板容器 */}
       <div className={`h-full w-full flex flex-col overflow-hidden ${containerWidthClass}`}>
         {/* 頂部工具列：國曆日期 + 農曆/節氣/假日 + 直橫/背光/刷新/主題/設定 */}
-        <header className="flex flex-wrap items-center justify-between gap-2 border-b-[3px] border-[var(--border-color)] pb-2 shrink-0">
+        <header
+          className={`flex flex-wrap items-center justify-between ${
+            isCompact4 ? 'gap-1.5 border-b-[2px] pb-1.5' : 'gap-2 border-b-[3px] pb-2'
+          } border-[var(--border-color)] shrink-0`}
+        >
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 min-w-0">
             <span
               className={`${
                 effectiveDeviceScale === 'tablet10'
                   ? 'text-[length:calc(25px*var(--fs))]'
-                  : effectiveDeviceScale === 'phone'
-                    ? 'text-[length:calc(16.5px*var(--fs))]'
-                    : 'text-[length:calc(20px*var(--fs))]'
+                  : isCompact4
+                    ? 'text-[length:calc(16px*var(--fs))]'
+                    : effectiveDeviceScale === 'phone'
+                      ? 'text-[length:calc(16.5px*var(--fs))]'
+                      : 'text-[length:calc(20px*var(--fs))]'
               } font-black tracking-[0.5px] font-num whitespace-nowrap`}
             >
               {dateDisplay}
@@ -665,57 +790,73 @@ export default function App() {
               className={`${
                 effectiveDeviceScale === 'tablet10'
                   ? 'text-[length:calc(17px*var(--fs))]'
-                  : effectiveDeviceScale === 'phone'
+                  : hideHeaderLabels
                     ? 'text-[length:calc(11.5px*var(--fs))]'
                     : 'text-[length:calc(14px*var(--fs))]'
               } font-bold text-[var(--fg-muted)] whitespace-nowrap`}
             >
-              農曆 {todayInfo.lunarFull}
+              {isCompact4
+                ? `農曆 ${todayInfo.lunarMonthText}${todayInfo.lunarDayText}`
+                : `農曆 ${todayInfo.lunarFull}`}
               {todayInfo.solarTerm ? ` · ${todayInfo.solarTerm}` : ''}
               {todayInfo.holiday ? ` · ${todayInfo.holiday}` : ''}
             </span>
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
-            {/* 直橫顯示自動 / 手動切換 */}
-            <div
-              role="group"
-              aria-label="直橫顯示切換"
-              className="inline-flex items-center border-[1.5px] border-[var(--border-color)] rounded-[6px] overflow-hidden shrink-0"
-            >
-              {(
-                [
-                  { id: 'auto', label: '自動', icon: null },
-                  { id: 'portrait', label: '直向', icon: Smartphone },
-                  { id: 'landscape', label: '橫向', icon: Monitor },
-                ] as const
-              ).map((item) => {
-                const active = orientationMode === item.id;
-                const Icon = item.icon;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => handleSelectOrientation(item.id)}
-                    aria-pressed={active}
-                    className={`inline-flex items-center gap-1 ${
-                      effectiveDeviceScale === 'tablet10'
-                        ? 'px-2.5 py-1.5 text-[length:calc(14px*var(--fs-ctrl))]'
-                        : effectiveDeviceScale === 'phone'
-                          ? 'px-1.5 py-1 text-[length:calc(11.5px*var(--fs-ctrl))]'
-                          : 'px-2 py-1 text-[length:calc(12.5px*var(--fs-ctrl))]'
-                    } font-extrabold whitespace-nowrap cursor-pointer ${
-                      active
-                        ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
-                        : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
-                    }`}
-                  >
-                    {Icon && effectiveDeviceScale !== 'phone' && <Icon className="w-[0.95em] h-[0.95em]" />}
-                    {item.label}
-                  </button>
-                );
-              })}
-            </div>
+          <div className="flex items-center gap-1 shrink-0 flex-wrap">
+            {/* 直橫顯示切換：4.3 吋採單顆循環鍵節省頂部空間，其他尺寸顯示三段切換 */}
+            {isCompact4 ? (
+              <button
+                type="button"
+                onClick={cycleOrientationCompact}
+                className={btnClass}
+                title={`方向：${
+                  orientationMode === 'auto' ? '自動' : orientationMode === 'portrait' ? '直向' : '橫向'
+                }（點按切換）`}
+                aria-label="切換直橫顯示方向"
+              >
+                {isLandscape ? <Monitor className="w-3.5 h-3.5" /> : <Smartphone className="w-3.5 h-3.5" />}
+              </button>
+            ) : (
+              <div
+                role="group"
+                aria-label="直橫顯示切換"
+                className="inline-flex items-center border-[1.5px] border-[var(--border-color)] rounded-[6px] overflow-hidden shrink-0"
+              >
+                {(
+                  [
+                    { id: 'auto', label: '自動', icon: null },
+                    { id: 'portrait', label: '直向', icon: Smartphone },
+                    { id: 'landscape', label: '橫向', icon: Monitor },
+                  ] as const
+                ).map((item) => {
+                  const active = orientationMode === item.id;
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => handleSelectOrientation(item.id)}
+                      aria-pressed={active}
+                      className={`inline-flex items-center gap-1 ${
+                        effectiveDeviceScale === 'tablet10'
+                          ? 'px-2.5 py-1.5 text-[length:calc(14px*var(--fs-ctrl))]'
+                          : effectiveDeviceScale === 'phone'
+                            ? 'px-1.5 py-1 text-[length:calc(11.5px*var(--fs-ctrl))]'
+                            : 'px-2 py-1 text-[length:calc(12.5px*var(--fs-ctrl))]'
+                      } font-extrabold whitespace-nowrap cursor-pointer ${
+                        active
+                          ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                          : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
+                      }`}
+                    >
+                      {Icon && effectiveDeviceScale !== 'phone' && <Icon className="w-[0.95em] h-[0.95em]" />}
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {/* 背光 / 極致省電快速切換按鈕 */}
             <button
@@ -729,26 +870,166 @@ export default function App() {
               ) : (
                 <SunDim className="w-3.5 h-3.5" />
               )}
-              {effectiveDeviceScale !== 'phone' && backlightEval.shortLabel}
+              {!hideHeaderLabels && backlightEval.shortLabel}
             </button>
 
             <button type="button" onClick={forceFullRefresh} className={btnClass} title="防殘影刷新">
               <Sparkles className="w-3.5 h-3.5" />
-              {effectiveDeviceScale !== 'phone' && '清殘影'}
+              {!hideHeaderLabels && '清殘影'}
             </button>
             <button type="button" onClick={toggleTheme} className={btnClass} title="黑白反轉">
               {isDark ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-              {effectiveDeviceScale !== 'phone' && (isDark ? '淺色' : '深色')}
+              {!hideHeaderLabels && (isDark ? '淺色' : '深色')}
             </button>
             <button type="button" onClick={openSettings} className={btnClass} title="看板設定">
               <Settings className="w-3.5 h-3.5" />
-              {effectiveDeviceScale !== 'phone' && '設定'}
+              {!hideHeaderLabels && '設定'}
             </button>
           </div>
         </header>
 
-        {/* 內容主區域：依直向 / 橫向模式切換 */}
-        {isLandscape ? (
+        {/* 內容主區域：4.3 吋（閱星瞳 XTEINK X4）採雙頁切換（第1頁時鐘天氣 / 第2頁農曆日曆），支援觸控滑動、底部按鈕與實體按鍵 */}
+        {isCompact4 ? (
+          <div
+            className="flex-1 flex flex-col min-h-0 overflow-hidden"
+            onTouchStart={handleCompactTouchStart}
+            onTouchEnd={handleCompactTouchEnd}
+            onPointerDown={handleCompactPointerDown}
+            onPointerUp={handleCompactPointerUp}
+          >
+            {compactPage === 0 ? (
+              isLandscape ? (
+                <main className="flex-1 grid grid-cols-[0.92fr_1.08fr] gap-3 pt-2 min-h-0 overflow-hidden">
+                  <section className="flex flex-col justify-center items-center text-center pr-3 border-r-[2px] border-[var(--border-color)] min-h-0">
+                    <div
+                      className={`${landscapeClockClass} font-black leading-[0.95] tracking-[-3px] font-num`}
+                    >
+                      {timeDisplay}
+                    </div>
+                    <div className="mt-2 text-[length:calc(13.5px*var(--fs))] font-extrabold">
+                      {townPreset.name}
+                    </div>
+                    <div className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
+                      {todayInfo.holiday
+                        ? `國定假日 · ${todayInfo.holiday}`
+                        : todayInfo.solarTerm
+                          ? `節氣 · ${todayInfo.solarTerm}`
+                          : backlightEval.shortLabel}
+                    </div>
+                  </section>
+                  <div className="flex flex-col justify-center min-h-0 overflow-y-auto">
+                    <WeatherPanel
+                      townName={townPreset.name}
+                      weather={weather}
+                      aqi={aqi}
+                      loading={weatherLoading}
+                      error={weatherError}
+                      requiresApiKey={requiresApiKey}
+                      isLandscape={true}
+                      deviceScale="compact4"
+                      fontScale={fontScaleRatio}
+                      onRefresh={fetchWeatherAndAQI}
+                      onOpenSettings={openSettings}
+                    />
+                  </div>
+                </main>
+              ) : (
+                <main className="flex-1 flex flex-col justify-between min-h-0 overflow-y-auto">
+                  {/* 第 1 頁：大時鐘 */}
+                  <section className="text-center py-2.5 border-b-[2px] border-[var(--border-color)] shrink-0">
+                    <div
+                      className={`${portraitClockClass} font-black leading-[0.92] tracking-[-3px] font-num`}
+                    >
+                      {timeDisplay}
+                    </div>
+                    <div className="mt-1 flex items-center justify-center gap-1.5 text-[length:calc(11.5px*var(--fs))] font-bold text-[var(--fg-muted)]">
+                      <span>{townPreset.name}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>{backlightEval.shortLabel}</span>
+                      {todayInfo.holiday && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-black text-[var(--fg-color)] underline underline-offset-2">
+                            {todayInfo.holiday}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* 第 1 頁：Google 天氣風格 + 未來 12 小時變化（6 格清爽版） */}
+                  <div className="flex-1 flex flex-col justify-center py-2 min-h-0">
+                    <WeatherPanel
+                      townName={townPreset.name}
+                      weather={weather}
+                      aqi={aqi}
+                      loading={weatherLoading}
+                      error={weatherError}
+                      requiresApiKey={requiresApiKey}
+                      isLandscape={false}
+                      deviceScale="compact4"
+                      fontScale={fontScaleRatio}
+                      onRefresh={fetchWeatherAndAQI}
+                      onOpenSettings={openSettings}
+                    />
+                  </div>
+                </main>
+              )
+            ) : (
+              /* 第 2 頁：全畫面農曆月曆與行程 */
+              <main className="flex-1 flex flex-col pt-2 min-h-0 overflow-hidden">
+                <CalendarPanel
+                  today={now}
+                  events={events}
+                  hasIcalUrl={Boolean(icalUrl)}
+                  syncStatus={syncStatus}
+                  isLandscape={isLandscape}
+                  deviceScale="compact4"
+                  onOpenSettings={openSettings}
+                />
+              </main>
+            )}
+
+            {/* 4.3 吋底部雙頁切換列（支援按鈕點擊、觸控滑動與實體翻頁鍵／音量鍵／方向鍵） */}
+            <nav
+              aria-label="4.3吋雙頁切換"
+              className="pt-1.5 mt-1 border-t-[2px] border-[var(--border-color)] shrink-0 flex flex-col gap-1"
+            >
+              <div className="grid grid-cols-2 border-[1.5px] border-[var(--border-color)] rounded-[6px] overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setCompactPage(0)}
+                  aria-pressed={compactPage === 0}
+                  className={`flex items-center justify-center gap-1 py-1.5 px-2 text-[length:calc(12.5px*var(--fs-ctrl))] font-black cursor-pointer whitespace-nowrap ${
+                    compactPage === 0
+                      ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                      : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
+                  }`}
+                >
+                  <ChevronLeft className="w-3.5 h-3.5 shrink-0" />
+                  <Clock className="w-3.5 h-3.5 shrink-0" />
+                  <span>時鐘天氣</span>
+                  <span className="font-num opacity-80">1/2</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCompactPage(1)}
+                  aria-pressed={compactPage === 1}
+                  className={`flex items-center justify-center gap-1 py-1.5 px-2 text-[length:calc(12.5px*var(--fs-ctrl))] font-black cursor-pointer whitespace-nowrap border-l-[1.5px] border-[var(--border-color)] ${
+                    compactPage === 1
+                      ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                      : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
+                  }`}
+                >
+                  <CalendarDays className="w-3.5 h-3.5 shrink-0" />
+                  <span>農曆日曆</span>
+                  <span className="font-num opacity-80">2/2</span>
+                  <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                </button>
+              </div>
+            </nav>
+          </div>
+        ) : isLandscape ? (
           <main className="flex-1 grid grid-cols-[1.12fr_0.88fr] gap-4 pt-3 min-h-0 overflow-hidden">
             <div className="flex flex-col justify-between pr-4 border-r-[3px] border-[var(--border-color)] min-h-0 overflow-y-auto">
               {/* 大時鐘 */}
@@ -1197,8 +1478,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* 區塊三：閱讀器尺寸與天氣地區 */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-b border-[var(--border-subtle)] pb-4">
+            {/* 區塊三：閱讀器尺寸、顯示方向與天氣地區 */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 border-b border-[var(--border-subtle)] pb-4">
               <div className="flex flex-col gap-1">
                 <label htmlFor="device-profile-select" className="text-[13px] font-extrabold">
                   閱讀器尺寸適配：
@@ -1210,9 +1491,26 @@ export default function App() {
                   className="w-full p-2 text-[13px] font-bold border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
                 >
                   <option value="auto">自動偵測（推薦）</option>
+                  <option value="compact4">4.3 吋（閱星瞳 XTEINK X4・雙頁）</option>
                   <option value="phone">手機型（Viwoods）</option>
                   <option value="reader6">6 吋電子紙閱讀器</option>
                   <option value="tablet10">10.3 吋（BOOX）</option>
+                </select>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label htmlFor="orientation-select" className="text-[13px] font-extrabold">
+                  直橫顯示方向：
+                </label>
+                <select
+                  id="orientation-select"
+                  value={draftOrientationMode}
+                  onChange={(e) => setDraftOrientationMode(e.target.value as OrientationMode)}
+                  className="w-full p-2 text-[13px] font-bold border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
+                >
+                  <option value="auto">自動偵測</option>
+                  <option value="portrait">直向顯示</option>
+                  <option value="landscape">橫向顯示</option>
                 </select>
               </div>
 
@@ -1248,8 +1546,8 @@ export default function App() {
               </div>
               <ol className="list-decimal pl-4 flex flex-col gap-1.5 text-[12px] leading-[1.5] font-semibold">
                 <li>
-                  <span className="font-extrabold">字體大小與尺寸排版：</span>
-                  支援 6 吋原生閱讀器、10.3 吋黑白（如 BOOX 10.3）及手機型閱讀器（如 Viwoods AiPaper），可在設定最上方自由調整 85%～170% 字體大小（10.3 吋建議 130%～150%），頂部亦可一鍵切換「自動／直向／橫向」。
+                  <span className="font-extrabold">尺寸、雙頁切換與字體大小：</span>
+                  支援 4.3 吋（閱星瞳 XTEINK X4）、6 吋原生閱讀器、10.3 吋黑白（如 BOOX 10.3）及手機型閱讀器（如 Viwoods AiPaper）。其中 4.3 吋採雙頁排版（第 1 頁時鐘天氣、第 2 頁農曆日曆），可透過「左右滑動」、「底部切換按鈕」或「實體翻頁鍵／音量鍵／方向鍵」切換；字體大小可在設定最上方調整 85%～170%（10.3 吋建議 130%～150%）。
                 </li>
                 <li>
                   <span className="font-extrabold">電子紙防殘影：</span>

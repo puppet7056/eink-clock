@@ -3,7 +3,7 @@ import { Droplets, KeyRound, RefreshCw, Sunrise, Sunset, Wind } from 'lucide-rea
 import type { AqiPayload, CwaWeatherPayload, HourlyForecastItem } from '../types/weather';
 import { WeatherIcon } from './WeatherIcons';
 
-export type DeviceScale = 'phone' | 'reader6' | 'tablet10';
+export type DeviceScale = 'compact4' | 'phone' | 'reader6' | 'tablet10';
 
 interface WeatherPanelProps {
   townName: string;
@@ -60,29 +60,48 @@ function HourlyChart({
   deviceScale: DeviceScale;
   fontScale: number;
 }) {
-  const slots = hourly.slice(0, 12);
+  const isCompact4 = deviceScale === 'compact4';
+  // 4.3 吋螢幕每 2 小時取 1 格（共 6 格涵蓋未來 12 小時），避免橫向捲動衝突並維持大字清晰
+  const slots = useMemo(() => {
+    const first12 = hourly.slice(0, 12);
+    if (!isCompact4 || first12.length <= 6) return first12;
+    return first12.filter((_, idx) => idx % 2 === 0).slice(0, 6);
+  }, [hourly, isCompact4]);
   const count = slots.length;
 
   const clampedChartScale = Math.min(1.45, Math.max(0.88, fontScale));
-  const baseChartHeight = deviceScale === 'tablet10' ? 92 : deviceScale === 'phone' ? 58 : 70;
+  const baseChartHeight =
+    deviceScale === 'tablet10' ? 92 : isCompact4 ? 64 : deviceScale === 'phone' ? 58 : 70;
   const chartHeight = Math.round(baseChartHeight * (0.72 + 0.28 * clampedChartScale));
   const heightClass =
     deviceScale === 'tablet10'
       ? 'h-[calc(92px*var(--fs-ctrl))]'
-      : deviceScale === 'phone'
-        ? 'h-[calc(58px*var(--fs-ctrl))]'
-        : 'h-[calc(70px*var(--fs-ctrl))]';
-  const baseIconSize = deviceScale === 'tablet10' ? 26 : deviceScale === 'phone' ? 18 : 21;
+      : isCompact4
+        ? 'h-[calc(64px*var(--fs-ctrl))]'
+        : deviceScale === 'phone'
+          ? 'h-[calc(58px*var(--fs-ctrl))]'
+          : 'h-[calc(70px*var(--fs-ctrl))]';
+  const baseIconSize =
+    deviceScale === 'tablet10' ? 26 : isCompact4 ? 20 : deviceScale === 'phone' ? 18 : 21;
   const iconSize = Math.round(baseIconSize * Math.min(1.38, Math.max(0.88, fontScale)));
 
   const svgTempFont = Number(
-    ((deviceScale === 'tablet10' ? 14.5 : 12.5) * Math.min(1.24, Math.max(0.9, fontScale))).toFixed(1)
+    (
+      (deviceScale === 'tablet10' ? 14.5 : isCompact4 ? 19 : 12.5) *
+      Math.min(1.24, Math.max(0.9, fontScale))
+    ).toFixed(1)
   );
   const svgRainFont = Number(
-    ((deviceScale === 'tablet10' ? 13 : 11.5) * Math.min(1.22, Math.max(0.9, fontScale))).toFixed(1)
+    (
+      (deviceScale === 'tablet10' ? 13 : isCompact4 ? 17.5 : 11.5) *
+      Math.min(1.22, Math.max(0.9, fontScale))
+    ).toFixed(1)
   );
   const svgWindFont = Number(
-    ((deviceScale === 'tablet10' ? 12 : 10.5) * Math.min(1.18, Math.max(0.9, fontScale))).toFixed(1)
+    (
+      (deviceScale === 'tablet10' ? 12 : isCompact4 ? 15.5 : 10.5) *
+      Math.min(1.18, Math.max(0.9, fontScale))
+    ).toFixed(1)
   );
 
   const { linePath, areaPath, points, maxRain, maxWind } = useMemo(() => {
@@ -90,7 +109,7 @@ function HourlyChart({
       return { linePath: '', areaPath: '', points: [], maxRain: 100, maxWind: 10 };
     }
     const width = 600;
-    const topPad = Math.round(24 * Math.min(1.25, Math.max(0.95, fontScale)));
+    const topPad = Math.round((isCompact4 ? 26 : 24) * Math.min(1.25, Math.max(0.95, fontScale)));
     const bottomPad = 12;
     const plotH = Math.max(24, chartHeight - topPad - bottomPad);
 
@@ -119,12 +138,13 @@ function HourlyChart({
       maxRain: Math.max(40, ...slots.map((s) => s.pop)),
       maxWind: Math.max(6, ...slots.map((s) => s.windSpeed)),
     };
-  }, [slots, count, chartHeight, fontScale]);
+  }, [slots, count, chartHeight, fontScale, isCompact4]);
 
   if (count === 0) return null;
 
-  const minWidthClass =
-    fontScale >= 1.5
+  const minWidthClass = isCompact4
+    ? 'w-full'
+    : fontScale >= 1.5
       ? 'min-w-[620px] w-full'
       : fontScale >= 1.3
         ? 'min-w-[540px] w-full'
@@ -133,7 +153,7 @@ function HourlyChart({
           : 'min-w-[420px] w-full';
 
   return (
-    <div className="w-full overflow-x-auto">
+    <div className={isCompact4 ? 'w-full overflow-hidden' : 'w-full overflow-x-auto'}>
       <div className={minWidthClass}>
         {metric === 'temp' && (
           <svg
@@ -291,7 +311,11 @@ function HourlyChart({
         )}
 
         {/* Hourly icon + precipitation + timestamp strip */}
-        <div className="grid grid-cols-12 border-t border-[var(--border-subtle)] pt-1.5 mt-0.5">
+        <div
+          className={`grid ${
+            isCompact4 ? 'grid-cols-6' : 'grid-cols-12'
+          } border-t border-[var(--border-subtle)] pt-1.5 mt-0.5`}
+        >
           {slots.map((slot, idx) => (
             <div
               key={`${slot.dateLabel}-${slot.timeLabel}-meta-${idx}`}
@@ -412,30 +436,41 @@ export function WeatherPanel({
   const { current, today, hourly } = weather;
   const aqiText = aqi ? `AQI ${aqi.usAqi} ${getAqiLabel(aqi.usAqi)}` : 'AQI --';
 
+  const isSmallScreen = deviceScale === 'phone' || deviceScale === 'compact4';
   const baseHeroIcon =
-    deviceScale === 'tablet10' ? 68 : deviceScale === 'phone' ? 42 : isLandscape ? 50 : 54;
+    deviceScale === 'tablet10'
+      ? 68
+      : deviceScale === 'compact4'
+        ? 44
+        : deviceScale === 'phone'
+          ? 42
+          : isLandscape
+            ? 50
+            : 54;
   const heroIconSize = Math.round(baseHeroIcon * Math.min(1.4, Math.max(0.85, fontScale)));
   const heroTempClass =
     deviceScale === 'tablet10'
       ? 'text-[length:calc(66px*var(--fs))]'
-      : deviceScale === 'phone'
-        ? 'text-[length:calc(40px*var(--fs))]'
-        : isLandscape
-          ? 'text-[length:calc(48px*var(--fs))]'
-          : 'text-[length:calc(54px*var(--fs))]';
+      : deviceScale === 'compact4'
+        ? 'text-[length:calc(42px*var(--fs))]'
+        : deviceScale === 'phone'
+          ? 'text-[length:calc(40px*var(--fs))]'
+          : isLandscape
+            ? 'text-[length:calc(48px*var(--fs))]'
+            : 'text-[length:calc(54px*var(--fs))]';
   const metricTextClass =
     deviceScale === 'tablet10'
       ? 'text-[length:calc(16px*var(--fs))]'
-      : deviceScale === 'phone'
+      : isSmallScreen
         ? 'text-[length:calc(11.5px*var(--fs))]'
         : 'text-[length:calc(13px*var(--fs))]';
 
   return (
-    <section className="flex flex-col justify-between gap-2.5">
+    <section className={`flex flex-col justify-between ${deviceScale === 'compact4' ? 'gap-2' : 'gap-2.5'}`}>
       {/* Top Hero Row — Google Weather inspired */}
       <div
         className={`flex ${
-          deviceScale === 'phone' ? 'flex-col gap-2' : 'flex-wrap items-center justify-between gap-x-4 gap-y-2'
+          isSmallScreen ? 'flex-col gap-1.5' : 'flex-wrap items-center justify-between gap-x-4 gap-y-2'
         }`}
       >
         {/* Left: Weather Icon + Hero Temperature + Condition */}
@@ -447,7 +482,7 @@ export function WeatherPanel({
             size={heroIconSize}
             className="shrink-0"
           />
-          <div className="flex items-baseline gap-2.5 min-w-0">
+          <div className="flex items-baseline gap-2 min-w-0">
             <span className={`${heroTempClass} font-black leading-none tracking-[-2px] font-num`}>
               {current.temp}°
             </span>
@@ -457,14 +492,14 @@ export function WeatherPanel({
                   className={`${
                     deviceScale === 'tablet10'
                       ? 'text-[length:calc(24px*var(--fs))]'
-                      : deviceScale === 'phone'
+                      : isSmallScreen
                         ? 'text-[length:calc(16px*var(--fs))]'
                         : 'text-[length:calc(19px*var(--fs))]'
                   } font-extrabold leading-tight`}
                 >
                   {current.wxText}
                 </span>
-                {current.comfort && (
+                {current.comfort && deviceScale !== 'compact4' && (
                   <span
                     className={`${
                       deviceScale === 'tablet10'
@@ -480,12 +515,12 @@ export function WeatherPanel({
                 className={`${
                   deviceScale === 'tablet10'
                     ? 'text-[length:calc(15.5px*var(--fs))]'
-                    : deviceScale === 'phone'
+                    : isSmallScreen
                       ? 'text-[length:calc(11.5px*var(--fs))]'
                       : 'text-[length:calc(13px*var(--fs))]'
                 } font-semibold text-[var(--fg-muted)] font-num mt-0.5`}
               >
-                最高 {today.tempMax}° / 最低 {today.tempMin}° · 體感 {current.feelsLike}°
+                高 {today.tempMax}° / 低 {today.tempMin}° · 體感 {current.feelsLike}°
               </div>
             </div>
           </div>
@@ -493,8 +528,8 @@ export function WeatherPanel({
 
         {/* Right: Clean unboxed metrics grid */}
         <div
-          className={`grid grid-cols-2 gap-x-4 gap-y-1.5 font-semibold ${metricTextClass} ${
-            deviceScale === 'phone'
+          className={`grid grid-cols-2 gap-x-3 gap-y-1 font-semibold ${metricTextClass} ${
+            isSmallScreen
               ? 'border-t border-[var(--border-subtle)] pt-1.5'
               : 'border-l border-[var(--border-subtle)] pl-3.5'
           }`}
@@ -523,7 +558,7 @@ export function WeatherPanel({
 
       {/* 12-Hour Forecast Header & Segmented Metric Switch */}
       <div className="border-t border-[var(--border-subtle)] pt-2">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-1.5 mb-1.5">
           <div
             className={`flex items-center gap-1.5 ${
               deviceScale === 'tablet10'
@@ -535,18 +570,18 @@ export function WeatherPanel({
               className={`${
                 deviceScale === 'tablet10'
                   ? 'text-[length:calc(16.5px*var(--fs))]'
-                  : deviceScale === 'phone'
+                  : isSmallScreen
                     ? 'text-[length:calc(12.5px*var(--fs))]'
                     : 'text-[length:calc(14px*var(--fs))]'
               } font-extrabold whitespace-nowrap`}
             >
-              未來 12 小時變化
+              未來 12 小時
             </span>
             <span aria-hidden="true" className="text-[var(--fg-muted)]">·</span>
             <span className="text-[var(--fg-muted)] truncate">
-              {townName}（{weather.source}）
+              {deviceScale === 'compact4' ? townName : `${townName}（${weather.source}）`}
             </span>
-            {deviceScale !== 'phone' && today.sunrise !== '--:--' && (
+            {!isSmallScreen && today.sunrise !== '--:--' && (
               <span className="hidden sm:inline-flex items-center gap-1 text-[length:calc(12.5px*var(--fs))] font-num text-[var(--fg-muted)] whitespace-nowrap">
                 <span aria-hidden="true">·</span>
                 <Sunrise className="w-[1em] h-[1em]" />
