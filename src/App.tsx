@@ -342,19 +342,23 @@ export default function App() {
     orientationMode === 'auto' ? (systemIsLandscape ? 'landscape' : 'portrait') : orientationMode;
   const isLandscape = effectiveOrientation === 'landscape';
 
-  // 自動偵測閱讀器尺寸：4.3吋 (閱星瞳 XTEINK X4) / 手機型 (Viwoods) / 6吋原生 / 10.3吋大螢幕 (BOOX)
+  // 自動偵測閱讀器尺寸：4.3吋 (閱星瞳 XTEINK X4) / 手機型 (Viwoods) / 6吋閱讀器 (Read6) / 10.3吋大螢幕 (BOOX)
   const detectedScale: DeviceScale = useMemo(() => {
     const minSide = Math.min(viewport.w, viewport.h);
     const maxSide = Math.max(viewport.w, viewport.h);
+    const aspectRatio = minSide > 0 ? maxSide / minSide : 1;
     if (minSide <= 360 || (minSide < 400 && maxSide <= 680)) return 'compact4';
-    if (viewport.w < 460 || minSide < 440) return 'phone';
     if (maxSide >= 860 && minSide >= 600) return 'tablet10';
+    // 手機型閱讀器長寬比接近 16:9～20:9；6 吋閱讀器（如 Read6）為 4:3（約 1.33～1.45）
+    if ((viewport.w < 460 || minSide < 440) && aspectRatio >= 1.6) return 'phone';
     return 'reader6';
   }, [viewport]);
 
   const effectiveDeviceScale: DeviceScale =
     deviceProfile === 'auto' ? detectedScale : deviceProfile;
   const isCompact4 = effectiveDeviceScale === 'compact4';
+  const isReader6 = effectiveDeviceScale === 'reader6';
+  const isTwoPageMode = isCompact4 || isReader6;
 
   // 計算當下目標背光狀態（完全無背光極致省電 / 夜晚部分背光 / 手動 / 系統）
   const backlightEval = useMemo(
@@ -402,9 +406,9 @@ export default function App() {
     document.documentElement.dataset.fontScale = String(fontScale);
   }, [fontScale]);
 
-  // 4.3 吋（閱星瞳 XTEINK X4）實體翻頁鍵 / 音量鍵 / 方向鍵雙頁切換（支援無觸控機型）
+  // 4.3 吋（閱星瞳 XTEINK X4）與 6 吋（Read6）實體翻頁鍵 / 音量鍵 / 方向鍵雙頁切換
   useEffect(() => {
-    if (!isCompact4) {
+    if (!isTwoPageMode) {
       setCompactPage(0);
       return;
     }
@@ -452,15 +456,15 @@ export default function App() {
       document.removeEventListener('volumeupbutton', handleVolUp);
       document.removeEventListener('volumedownbutton', handleVolDown);
     };
-  }, [isCompact4, isSettingsOpen]);
+  }, [isTwoPageMode, isSettingsOpen]);
 
   const handleCompactTouchStart = (e: TouchEvent<HTMLDivElement>) => {
-    if (!isCompact4 || e.touches.length !== 1) return;
+    if (!isTwoPageMode || e.touches.length !== 1) return;
     swipeOriginRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
   };
 
   const handleCompactTouchEnd = (e: TouchEvent<HTMLDivElement>) => {
-    if (!isCompact4 || !swipeOriginRef.current || e.changedTouches.length !== 1) return;
+    if (!isTwoPageMode || !swipeOriginRef.current || e.changedTouches.length !== 1) return;
     const dx = e.changedTouches[0].clientX - swipeOriginRef.current.x;
     const dy = e.changedTouches[0].clientY - swipeOriginRef.current.y;
     swipeOriginRef.current = null;
@@ -470,12 +474,12 @@ export default function App() {
   };
 
   const handleCompactPointerDown = (e: PointerEvent<HTMLDivElement>) => {
-    if (!isCompact4 || e.pointerType === 'touch') return;
+    if (!isTwoPageMode || e.pointerType === 'touch') return;
     swipeOriginRef.current = { x: e.clientX, y: e.clientY };
   };
 
   const handleCompactPointerUp = (e: PointerEvent<HTMLDivElement>) => {
-    if (!isCompact4 || e.pointerType === 'touch' || !swipeOriginRef.current) return;
+    if (!isTwoPageMode || e.pointerType === 'touch' || !swipeOriginRef.current) return;
     const dx = e.clientX - swipeOriginRef.current.x;
     const dy = e.clientY - swipeOriginRef.current.y;
     swipeOriginRef.current = null;
@@ -1090,7 +1094,7 @@ export default function App() {
         ? 'text-[length:min(16vw,calc(clamp(56px,11vw,82px)*var(--fs-clock)))]'
         : effectiveDeviceScale === 'phone'
           ? 'text-[length:min(15vw,calc(clamp(48px,10vw,74px)*var(--fs-clock)))]'
-          : 'text-[length:min(15.5vw,calc(clamp(68px,8.6vw,112px)*var(--fs-clock)))]';
+          : 'text-[length:min(16vw,calc(clamp(76px,10vw,120px)*var(--fs-clock)))]';
 
   const portraitClockClass =
     effectiveDeviceScale === 'tablet10'
@@ -1099,7 +1103,7 @@ export default function App() {
         ? 'text-[length:min(26vw,calc(clamp(66px,21vw,94px)*var(--fs-clock)))]'
         : effectiveDeviceScale === 'phone'
           ? 'text-[length:min(24vw,calc(clamp(54px,18vw,82px)*var(--fs-clock)))]'
-          : 'text-[length:min(25vw,calc(clamp(68px,16vw,106px)*var(--fs-clock)))]';
+          : 'text-[length:min(26vw,calc(clamp(84px,19vw,132px)*var(--fs-clock)))]';
 
   const fontScaleRatio = fontScale / 100;
   const hideHeaderLabels = effectiveDeviceScale === 'phone' || isCompact4;
@@ -1328,8 +1332,8 @@ export default function App() {
           </div>
         </header>
 
-        {/* 內容主區域：4.3 吋（閱星瞳 XTEINK X4）採雙頁切換（第1頁時鐘天氣 / 第2頁農曆日曆），支援觸控滑動、底部按鈕與實體按鍵 */}
-        {isCompact4 ? (
+        {/* 內容主區域：4.3 吋（閱星瞳 XTEINK X4）與 6 吋（Read6）採雙頁切換（第1頁時鐘天氣 / 第2頁農曆日曆），支援觸控滑動、底部按鈕與實體按鍵 */}
+        {isTwoPageMode ? (
           <div
             className="flex-1 flex flex-col min-h-0 overflow-hidden"
             onTouchStart={handleCompactTouchStart}
@@ -1339,17 +1343,17 @@ export default function App() {
           >
             {compactPage === 0 ? (
               isLandscape ? (
-                <main className="flex-1 grid grid-cols-[0.92fr_1.08fr] gap-3 pt-2 min-h-0 overflow-hidden">
-                  <section className="flex flex-col justify-center items-center text-center pr-3 border-r-[2px] border-[var(--border-color)] min-h-0">
+                <main className={`flex-1 grid grid-cols-[0.92fr_1.08fr] ${isReader6 ? 'gap-4 pt-3' : 'gap-3 pt-2'} min-h-0 overflow-hidden`}>
+                  <section className={`flex flex-col justify-center items-center text-center ${isReader6 ? 'pr-4 border-r-[3px]' : 'pr-3 border-r-[2px]'} border-[var(--border-color)] min-h-0`}>
                     <div
                       className={`${landscapeClockClass} font-black leading-[0.95] tracking-[-3px] font-num`}
                     >
                       {timeDisplay}
                     </div>
-                    <div className="mt-2 text-[length:calc(13.5px*var(--fs))] font-extrabold">
+                    <div className={`mt-2 ${isReader6 ? 'text-[length:calc(16px*var(--fs))]' : 'text-[length:calc(13.5px*var(--fs))]'} font-extrabold`}>
                       {townPreset.name}
                     </div>
-                    <div className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
+                    <div className={`${isReader6 ? 'text-[length:calc(13.5px*var(--fs))]' : 'text-[length:calc(11.5px*var(--fs))]'} font-semibold text-[var(--fg-muted)]`}>
                       {todayInfo.holiday
                         ? `國定假日 · ${todayInfo.holiday}`
                         : todayInfo.solarTerm
@@ -1366,7 +1370,7 @@ export default function App() {
                       error={weatherError}
                       requiresApiKey={requiresApiKey}
                       isLandscape={true}
-                      deviceScale="compact4"
+                      deviceScale={effectiveDeviceScale}
                       fontScale={fontScaleRatio}
                       onRefresh={fetchWeatherAndAQI}
                       onOpenSettings={openSettings}
@@ -1376,13 +1380,13 @@ export default function App() {
               ) : (
                 <main className="flex-1 flex flex-col justify-between min-h-0 overflow-y-auto">
                   {/* 第 1 頁：大時鐘 */}
-                  <section className="text-center py-2.5 border-b-[2px] border-[var(--border-color)] shrink-0">
+                  <section className={`text-center ${isReader6 ? 'py-4 border-b-[3px]' : 'py-2.5 border-b-[2px]'} border-[var(--border-color)] shrink-0`}>
                     <div
                       className={`${portraitClockClass} font-black leading-[0.92] tracking-[-3px] font-num`}
                     >
                       {timeDisplay}
                     </div>
-                    <div className="mt-1 flex items-center justify-center gap-1.5 text-[length:calc(11.5px*var(--fs))] font-bold text-[var(--fg-muted)]">
+                    <div className={`mt-1.5 flex items-center justify-center gap-2 ${isReader6 ? 'text-[length:calc(14px*var(--fs))]' : 'text-[length:calc(11.5px*var(--fs))]'} font-bold text-[var(--fg-muted)]`}>
                       <span>{townPreset.name}</span>
                       <span aria-hidden="true">·</span>
                       <span>{backlightEval.shortLabel}</span>
@@ -1398,7 +1402,7 @@ export default function App() {
                   </section>
 
                   {/* 第 1 頁：Google 天氣風格 + 未來 12 小時變化（6 格清爽版） */}
-                  <div className="flex-1 flex flex-col justify-center py-2 min-h-0">
+                  <div className={`flex-1 flex flex-col justify-center ${isReader6 ? 'py-3' : 'py-2'} min-h-0`}>
                     <WeatherPanel
                       townName={townPreset.name}
                       weather={weather}
@@ -1407,7 +1411,7 @@ export default function App() {
                       error={weatherError}
                       requiresApiKey={requiresApiKey}
                       isLandscape={false}
-                      deviceScale="compact4"
+                      deviceScale={effectiveDeviceScale}
                       fontScale={fontScaleRatio}
                       onRefresh={fetchWeatherAndAQI}
                       onOpenSettings={openSettings}
@@ -1417,7 +1421,7 @@ export default function App() {
               )
             ) : (
               /* 第 2 頁：全畫面農曆月曆與行程 */
-              <main className="flex-1 flex flex-col pt-2 min-h-0 overflow-hidden">
+              <main className={`flex-1 flex flex-col ${isReader6 ? 'pt-3' : 'pt-2'} min-h-0 overflow-hidden`}>
                 <CalendarPanel
                   today={now}
                   events={events}
@@ -1430,31 +1434,35 @@ export default function App() {
                   syncStatus={syncStatus}
                   calendarError={calendarError}
                   isLandscape={isLandscape}
-                  deviceScale="compact4"
+                  deviceScale={effectiveDeviceScale}
                   onGoogleSignIn={handleGoogleSignIn}
                   onOpenSettings={openSettings}
                 />
               </main>
             )}
 
-            {/* 4.3 吋底部雙頁切換列（支援按鈕點擊、觸控滑動與實體翻頁鍵／音量鍵／方向鍵） */}
+            {/* 4.3 吋 / 6 吋底部雙頁切換列（支援按鈕點擊、觸控滑動與實體翻頁鍵／音量鍵／方向鍵） */}
             <nav
-              aria-label="4.3吋雙頁切換"
-              className="pt-1.5 mt-1 border-t-[2px] border-[var(--border-color)] shrink-0 flex flex-col gap-1"
+              aria-label="雙頁切換"
+              className={`${isReader6 ? 'pt-2 mt-1.5' : 'pt-1.5 mt-1'} border-t-[2px] border-[var(--border-color)] shrink-0 flex flex-col gap-1`}
             >
               <div className="grid grid-cols-2 border-[1.5px] border-[var(--border-color)] rounded-[6px] overflow-hidden">
                 <button
                   type="button"
                   onClick={() => setCompactPage(0)}
                   aria-pressed={compactPage === 0}
-                  className={`flex items-center justify-center gap-1 py-1.5 px-2 text-[length:calc(12.5px*var(--fs-ctrl))] font-black cursor-pointer whitespace-nowrap ${
+                  className={`flex items-center justify-center gap-1.5 ${
+                    isReader6
+                      ? 'py-2 px-3 text-[length:calc(14px*var(--fs-ctrl))]'
+                      : 'py-1.5 px-2 text-[length:calc(12.5px*var(--fs-ctrl))]'
+                  } font-black cursor-pointer whitespace-nowrap ${
                     compactPage === 0
                       ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
                       : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
                   }`}
                 >
-                  <ChevronLeft className="w-3.5 h-3.5 shrink-0" />
-                  <Clock className="w-3.5 h-3.5 shrink-0" />
+                  <ChevronLeft className={`${isReader6 ? 'w-4 h-4' : 'w-3.5 h-3.5'} shrink-0`} />
+                  <Clock className={`${isReader6 ? 'w-4 h-4' : 'w-3.5 h-3.5'} shrink-0`} />
                   <span>時鐘天氣</span>
                   <span className="font-num opacity-80">1/2</span>
                 </button>
@@ -1462,16 +1470,20 @@ export default function App() {
                   type="button"
                   onClick={() => setCompactPage(1)}
                   aria-pressed={compactPage === 1}
-                  className={`flex items-center justify-center gap-1 py-1.5 px-2 text-[length:calc(12.5px*var(--fs-ctrl))] font-black cursor-pointer whitespace-nowrap border-l-[1.5px] border-[var(--border-color)] ${
+                  className={`flex items-center justify-center gap-1.5 ${
+                    isReader6
+                      ? 'py-2 px-3 text-[length:calc(14px*var(--fs-ctrl))]'
+                      : 'py-1.5 px-2 text-[length:calc(12.5px*var(--fs-ctrl))]'
+                  } font-black cursor-pointer whitespace-nowrap border-l-[1.5px] border-[var(--border-color)] ${
                     compactPage === 1
                       ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
                       : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
                   }`}
                 >
-                  <CalendarDays className="w-3.5 h-3.5 shrink-0" />
+                  <CalendarDays className={`${isReader6 ? 'w-4 h-4' : 'w-3.5 h-3.5'} shrink-0`} />
                   <span>農曆日曆</span>
                   <span className="font-num opacity-80">2/2</span>
-                  <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                  <ChevronRight className={`${isReader6 ? 'w-4 h-4' : 'w-3.5 h-3.5'} shrink-0`} />
                 </button>
               </div>
             </nav>
@@ -2067,7 +2079,7 @@ export default function App() {
                   <option value="auto">自動偵測（推薦）</option>
                   <option value="compact4">4.3 吋（閱星瞳 XTEINK X4・雙頁）</option>
                   <option value="phone">手機型（Viwoods）</option>
-                  <option value="reader6">6 吋電子紙閱讀器</option>
+                  <option value="reader6">6 吋電子紙閱讀器（如 Read6・雙頁）</option>
                   <option value="tablet10">10.3 吋（BOOX）</option>
                 </select>
               </div>
@@ -2246,7 +2258,7 @@ export default function App() {
               <ol className="list-decimal pl-[1.4em] flex flex-col gap-2 text-[length:calc(13px*var(--fs))] leading-[1.6] font-semibold">
                 <li>
                   <span className="font-extrabold">尺寸、雙頁切換與字體大小：</span>
-                  支援 4.3 吋（閱星瞳 XTEINK X4）、6 吋原生閱讀器、10.3 吋黑白（如 BOOX 10.3）及手機型閱讀器（如 Viwoods AiPaper）。其中 4.3 吋採雙頁排版（第 1 頁時鐘天氣、第 2 頁農曆日曆），可透過「左右滑動」、「底部切換按鈕」或「實體翻頁鍵／音量鍵／方向鍵」切換；字體大小可在設定最上方調整 85%～170%（10.3 吋建議 130%～150%）。
+                  支援 4.3 吋（閱星瞳 XTEINK X4）、6 吋電子紙閱讀器（如 Read6 / Read6 Pro）、10.3 吋黑白（如 BOOX 10.3）及手機型閱讀器（如 Viwoods AiPaper）。其中 4.3 吋與 6 吋皆採雙頁排版（第 1 頁時鐘天氣、第 2 頁農曆日曆），可透過「左右滑動」、「底部切換按鈕」或「實體翻頁鍵／音量鍵／方向鍵」切換；字體大小可在設定最上方調整 85%～170%（10.3 吋建議 130%～150%）。
                 </li>
                 <li>
                   <span className="font-extrabold">電子紙防殘影：</span>

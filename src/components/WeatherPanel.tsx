@@ -61,13 +61,14 @@ function HourlyChart({
   fontScale: number;
 }) {
   const isCompact4 = deviceScale === 'compact4';
-  const colCount = isCompact4 ? 6 : 12;
-  // 4.3 吋螢幕每 2 小時取 1 格（共 6 格涵蓋未來 12 小時），避免橫向捲動衝突並維持大字清晰
+  const isTwoPageScale = isCompact4 || deviceScale === 'reader6';
+  const colCount = isTwoPageScale ? 6 : 12;
+  // 4.3 吋與 6 吋雙頁模式每 2 小時取 1 格（共 6 格涵蓋未來 12 小時），避免與左右滑動翻頁衝突並維持大字清晰
   const slots = useMemo(() => {
     const first12 = hourly.slice(0, 12);
-    if (!isCompact4 || first12.length <= 6) return first12;
+    if (!isTwoPageScale || first12.length <= 6) return first12;
     return first12.filter((_, idx) => idx % 2 === 0).slice(0, 6);
-  }, [hourly, isCompact4]);
+  }, [hourly, isTwoPageScale]);
   const count = slots.length;
 
   const trackRef = useRef<HTMLDivElement | null>(null);
@@ -97,31 +98,31 @@ function HourlyChart({
       window.removeEventListener('resize', measure);
       if (observer) observer.disconnect();
     };
-  }, [deviceScale, fontScale, isCompact4, count]);
+  }, [deviceScale, fontScale, isTwoPageScale, count]);
 
   const clampedChartScale = Math.min(1.45, Math.max(0.88, fontScale));
   const baseChartHeight =
-    deviceScale === 'tablet10' ? 96 : isCompact4 ? 66 : deviceScale === 'phone' ? 60 : 74;
+    deviceScale === 'tablet10' ? 96 : deviceScale === 'reader6' ? 84 : isCompact4 ? 66 : 60;
   const chartHeight = Math.round(baseChartHeight * (0.72 + 0.28 * clampedChartScale));
   const baseIconSize =
-    deviceScale === 'tablet10' ? 26 : isCompact4 ? 20 : deviceScale === 'phone' ? 18 : 21;
+    deviceScale === 'tablet10' ? 26 : deviceScale === 'reader6' ? 24 : isCompact4 ? 20 : 18;
   const iconSize = Math.round(baseIconSize * Math.min(1.38, Math.max(0.88, fontScale)));
 
   const svgTempFont = Number(
     (
-      (deviceScale === 'tablet10' ? 15.5 : isCompact4 ? 14 : deviceScale === 'phone' ? 11.5 : 13) *
+      (deviceScale === 'tablet10' ? 15.5 : deviceScale === 'reader6' ? 15 : isCompact4 ? 14 : 11.5) *
       Math.min(1.3, Math.max(0.88, fontScale))
     ).toFixed(1)
   );
   const svgRainFont = Number(
     (
-      (deviceScale === 'tablet10' ? 14 : isCompact4 ? 13 : deviceScale === 'phone' ? 10.5 : 12) *
+      (deviceScale === 'tablet10' ? 14 : deviceScale === 'reader6' ? 13.5 : isCompact4 ? 13 : 10.5) *
       Math.min(1.26, Math.max(0.88, fontScale))
     ).toFixed(1)
   );
   const svgWindFont = Number(
     (
-      (deviceScale === 'tablet10' ? 13 : isCompact4 ? 12 : deviceScale === 'phone' ? 10 : 11) *
+      (deviceScale === 'tablet10' ? 13 : deviceScale === 'reader6' ? 12.5 : isCompact4 ? 12 : 10) *
       Math.min(1.22, Math.max(0.88, fontScale))
     ).toFixed(1)
   );
@@ -166,7 +167,7 @@ function HourlyChart({
 
   if (count === 0) return null;
 
-  const minWidthClass = isCompact4
+  const minWidthClass = isTwoPageScale
     ? 'w-full'
     : fontScale >= 1.5
       ? 'min-w-[620px] w-full'
@@ -177,7 +178,7 @@ function HourlyChart({
           : 'min-w-[420px] w-full';
 
   return (
-    <div className={isCompact4 ? 'w-full overflow-hidden' : 'w-full overflow-x-auto'}>
+    <div className={isTwoPageScale ? 'w-full overflow-hidden' : 'w-full overflow-x-auto'}>
       <div ref={trackRef} className={minWidthClass}>
         {metric === 'temp' && (
           <svg
@@ -347,7 +348,7 @@ function HourlyChart({
         {/* Hourly icon + precipitation + timestamp strip */}
         <div
           className={`grid ${
-            isCompact4 ? 'grid-cols-6' : 'grid-cols-12'
+            isTwoPageScale ? 'grid-cols-6' : 'grid-cols-12'
           } border-t border-[var(--border-subtle)] pt-1.5 mt-0.5`}
         >
           {slots.map((slot, idx) => (

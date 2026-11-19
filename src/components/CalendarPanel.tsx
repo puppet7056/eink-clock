@@ -211,26 +211,24 @@ export function CalendarPanel({
   const isViewingCurrentMonth =
     cursorYear === today.getFullYear() && cursorMonth === today.getMonth();
 
-  // compact4 (4.3吋) 採獨立第 2 頁全畫面顯示，字體可比單頁手機型更大更清楚
+  // compact4 (4.3吋) 與 reader6 (6吋) 皆採獨立第 2 頁全畫面顯示，字體更清晰寬鬆
   const dayNumClass =
     deviceScale === 'tablet10'
       ? 'text-[length:calc(20px*var(--fs))]'
-      : deviceScale === 'compact4'
-        ? 'text-[length:calc(15px*var(--fs))]'
-        : deviceScale === 'phone'
-          ? 'text-[length:calc(12.5px*var(--fs))]'
-          : isLandscape
-            ? 'text-[length:calc(15px*var(--fs))]'
-            : 'text-[length:calc(14px*var(--fs))]';
+      : deviceScale === 'reader6'
+        ? 'text-[length:calc(18px*var(--fs))]'
+        : deviceScale === 'compact4'
+          ? 'text-[length:calc(15px*var(--fs))]'
+          : 'text-[length:calc(12.5px*var(--fs))]';
 
   const lunarSubClass =
     deviceScale === 'tablet10'
       ? 'text-[length:calc(13px*var(--fs))]'
-      : deviceScale === 'compact4'
-        ? 'text-[length:calc(10.5px*var(--fs))]'
-        : deviceScale === 'phone'
-          ? 'text-[length:calc(9.5px*var(--fs))]'
-          : 'text-[length:calc(10.5px*var(--fs))]';
+      : deviceScale === 'reader6'
+        ? 'text-[length:calc(12px*var(--fs))]'
+        : deviceScale === 'compact4'
+          ? 'text-[length:calc(10.5px*var(--fs))]'
+          : 'text-[length:calc(9.5px*var(--fs))]';
 
   return (
     <section className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -469,11 +467,11 @@ export function CalendarPanel({
             className={`pt-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 ${
               deviceScale === 'tablet10'
                 ? 'text-[length:calc(15.5px*var(--fs))]'
-                : deviceScale === 'compact4'
-                  ? 'text-[length:calc(12.5px*var(--fs))]'
-                  : deviceScale === 'phone'
-                    ? 'text-[length:calc(11.5px*var(--fs))]'
-                    : 'text-[length:calc(13px*var(--fs))]'
+                : deviceScale === 'reader6'
+                  ? 'text-[length:calc(14px*var(--fs))]'
+                  : deviceScale === 'compact4'
+                    ? 'text-[length:calc(12.5px*var(--fs))]'
+                    : 'text-[length:calc(11.5px*var(--fs))]'
             } shrink-0`}
           >
             <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
