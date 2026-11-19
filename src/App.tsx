@@ -13,6 +13,7 @@ import {
   Sparkles,
   Sun,
   SunDim,
+  Type,
 } from 'lucide-react';
 import { CalendarPanel, type CalendarEventItem } from './components/CalendarPanel';
 import { WeatherPanel, type DeviceScale } from './components/WeatherPanel';
@@ -41,6 +42,23 @@ import { getTaiwanDayInfo } from './utils/taiwanCalendar';
 
 type OrientationMode = 'auto' | 'portrait' | 'landscape';
 type DeviceProfileMode = 'auto' | DeviceScale;
+
+const FONT_SCALE_OPTIONS = [
+  { value: 85, label: '偏小', short: '85%' },
+  { value: 100, label: '標準', short: '100%' },
+  { value: 115, label: '稍大', short: '115%' },
+  { value: 130, label: '大字', short: '130%' },
+  { value: 150, label: '特大', short: '150%' },
+  { value: 170, label: '超大', short: '170%' },
+] as const;
+
+type FontScalePreset = (typeof FONT_SCALE_OPTIONS)[number]['value'];
+
+function parseFontScale(raw: string): FontScalePreset {
+  const num = Number(raw);
+  const found = FONT_SCALE_OPTIONS.find((opt) => opt.value === num);
+  return found ? found.value : 100;
+}
 
 // 解析 iCal 日期字串
 function parseICalDate(str: string): Date | null {
@@ -114,6 +132,9 @@ export default function App() {
     const saved = readStorage('eink_device_profile', 'auto');
     return saved === 'phone' || saved === 'reader6' || saved === 'tablet10' ? saved : 'auto';
   });
+  const [fontScale, setFontScale] = useState<FontScalePreset>(() =>
+    parseFontScale(readStorage('eink_font_scale', '100'))
+  );
 
   // 背光與極致省電設定（完全儲存在本機）
   const [backlight, setBacklight] = useState<BacklightSettings>(() => loadBacklightSettings());
@@ -149,6 +170,7 @@ export default function App() {
   const [draftIcalUrl, setDraftIcalUrl] = useState<string>('');
   const [draftTownId, setDraftTownId] = useState<string>(townId);
   const [draftDeviceProfile, setDraftDeviceProfile] = useState<DeviceProfileMode>(deviceProfile);
+  const [draftFontScale, setDraftFontScale] = useState<FontScalePreset>(fontScale);
   const [draftCwaApiKey, setDraftCwaApiKey] = useState<string>('');
   const [draftStrictKey, setDraftStrictKey] = useState<boolean>(false);
   const [draftBacklight, setDraftBacklight] = useState<BacklightSettings>(backlight);
@@ -167,7 +189,7 @@ export default function App() {
     const minSide = Math.min(viewport.w, viewport.h);
     const maxSide = Math.max(viewport.w, viewport.h);
     if (viewport.w < 460 || minSide < 440) return 'phone';
-    if (maxSide >= 960 && minSide >= 680) return 'tablet10';
+    if (maxSide >= 860 && minSide >= 600) return 'tablet10';
     return 'reader6';
   }, [viewport]);
 
@@ -210,11 +232,15 @@ export default function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // 同步深淺色主題到 documentElement
+  // 同步深淺色主題與字體縮放到 documentElement
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
     document.body.classList.toggle('dark-mode', isDark);
   }, [isDark]);
+
+  useEffect(() => {
+    document.documentElement.dataset.fontScale = String(fontScale);
+  }, [fontScale]);
 
   // 電子紙防殘影全螢幕刷新（黑->白->正常）
   const forceFullRefresh = useCallback(() => {
@@ -509,11 +535,18 @@ export default function App() {
     setDraftIcalUrl(icalUrl);
     setDraftTownId(townId);
     setDraftDeviceProfile(deviceProfile);
+    setDraftFontScale(fontScale);
     setDraftCwaApiKey(cwaApiKey);
     setDraftStrictKey(strictApiKeyOnly);
     setDraftBacklight(backlight);
     setShowCwaKey(false);
     setIsSettingsOpen(true);
+  };
+
+  const stepDraftFontScale = (delta: -1 | 1) => {
+    const idx = FONT_SCALE_OPTIONS.findIndex((opt) => opt.value === draftFontScale);
+    const nextIdx = Math.min(FONT_SCALE_OPTIONS.length - 1, Math.max(0, idx + delta));
+    setDraftFontScale(FONT_SCALE_OPTIONS[nextIdx].value);
   };
 
   const saveSettings = () => {
@@ -523,6 +556,7 @@ export default function App() {
     setIcalUrl(cleanedIcal);
     setTownId(draftTownId);
     setDeviceProfile(draftDeviceProfile);
+    setFontScale(draftFontScale);
     setCwaApiKey(cleanedCwaKey);
     setStrictApiKeyOnly(draftStrictKey);
     setBacklight(draftBacklight);
@@ -530,6 +564,7 @@ export default function App() {
     writeStorage('eink_ical_url', cleanedIcal);
     writeStorage('eink_town_id', draftTownId);
     writeStorage('eink_device_profile', draftDeviceProfile);
+    writeStorage('eink_font_scale', String(draftFontScale));
     writeStorage('eink_cwa_api_key', cleanedCwaKey);
     writeStorage('eink_strict_api_key', String(draftStrictKey));
     saveBacklightSettings(draftBacklight);
@@ -573,28 +608,31 @@ export default function App() {
 
   const btnClass = `inline-flex items-center gap-1 bg-[var(--bg-color)] text-[var(--fg-color)] border-[1.5px] border-[var(--border-color)] ${
     effectiveDeviceScale === 'tablet10'
-      ? 'px-3 py-1.5 text-[13px]'
+      ? 'px-3 py-1.5 text-[length:calc(14px*var(--fs-ctrl))]'
       : effectiveDeviceScale === 'phone'
-        ? 'px-1.5 py-1 text-[11px]'
-        : 'px-2.5 py-1 text-[12px]'
+        ? 'px-1.5 py-1 text-[length:calc(11.5px*var(--fs-ctrl))]'
+        : 'px-2.5 py-1 text-[length:calc(12.5px*var(--fs-ctrl))]'
   } font-extrabold rounded-[6px] cursor-pointer whitespace-nowrap shrink-0 active:bg-[var(--surface-active)] active:text-[var(--fg-inverse)]`;
 
   const landscapeClockClass =
     effectiveDeviceScale === 'tablet10'
-      ? 'text-[clamp(86px,9.5vw,136px)]'
+      ? 'text-[length:min(15.5vw,calc(clamp(92px,9.8vw,148px)*var(--fs-clock)))]'
       : effectiveDeviceScale === 'phone'
-        ? 'text-[clamp(48px,10vw,72px)]'
-        : 'text-[clamp(64px,8.2vw,104px)]';
+        ? 'text-[length:min(15vw,calc(clamp(48px,10vw,74px)*var(--fs-clock)))]'
+        : 'text-[length:min(15.5vw,calc(clamp(68px,8.6vw,112px)*var(--fs-clock)))]';
 
   const portraitClockClass =
     effectiveDeviceScale === 'tablet10'
-      ? 'text-[clamp(88px,14vw,144px)]'
+      ? 'text-[length:min(25vw,calc(clamp(96px,15vw,160px)*var(--fs-clock)))]'
       : effectiveDeviceScale === 'phone'
-        ? 'text-[clamp(54px,18vw,78px)]'
-        : 'text-[clamp(64px,16vw,96px)]';
+        ? 'text-[length:min(24vw,calc(clamp(54px,18vw,82px)*var(--fs-clock)))]'
+        : 'text-[length:min(25vw,calc(clamp(68px,16vw,106px)*var(--fs-clock)))]';
+
+  const fontScaleRatio = fontScale / 100;
 
   return (
     <div
+      data-font-scale={String(fontScale)}
       className={`${
         isDark ? 'dark dark-mode ' : ''
       }h-screen w-screen overflow-hidden select-none bg-[var(--bg-color)] text-[var(--fg-color)] flex justify-center`}
@@ -615,10 +653,10 @@ export default function App() {
             <span
               className={`${
                 effectiveDeviceScale === 'tablet10'
-                  ? 'text-[23px]'
+                  ? 'text-[length:calc(25px*var(--fs))]'
                   : effectiveDeviceScale === 'phone'
-                    ? 'text-[16px]'
-                    : 'text-[19px]'
+                    ? 'text-[length:calc(16.5px*var(--fs))]'
+                    : 'text-[length:calc(20px*var(--fs))]'
               } font-black tracking-[0.5px] font-num whitespace-nowrap`}
             >
               {dateDisplay}
@@ -626,10 +664,10 @@ export default function App() {
             <span
               className={`${
                 effectiveDeviceScale === 'tablet10'
-                  ? 'text-[15px]'
+                  ? 'text-[length:calc(17px*var(--fs))]'
                   : effectiveDeviceScale === 'phone'
-                    ? 'text-[11px]'
-                    : 'text-[13px]'
+                    ? 'text-[length:calc(11.5px*var(--fs))]'
+                    : 'text-[length:calc(14px*var(--fs))]'
               } font-bold text-[var(--fg-muted)] whitespace-nowrap`}
             >
               農曆 {todayInfo.lunarFull}
@@ -662,17 +700,17 @@ export default function App() {
                     aria-pressed={active}
                     className={`inline-flex items-center gap-1 ${
                       effectiveDeviceScale === 'tablet10'
-                        ? 'px-2.5 py-1.5 text-[13px]'
+                        ? 'px-2.5 py-1.5 text-[length:calc(14px*var(--fs-ctrl))]'
                         : effectiveDeviceScale === 'phone'
-                          ? 'px-1.5 py-1 text-[11px]'
-                          : 'px-2 py-1 text-[12px]'
+                          ? 'px-1.5 py-1 text-[length:calc(11.5px*var(--fs-ctrl))]'
+                          : 'px-2 py-1 text-[length:calc(12.5px*var(--fs-ctrl))]'
                     } font-extrabold whitespace-nowrap cursor-pointer ${
                       active
                         ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
                         : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
                     }`}
                   >
-                    {Icon && effectiveDeviceScale !== 'phone' && <Icon className="w-3 h-3" />}
+                    {Icon && effectiveDeviceScale !== 'phone' && <Icon className="w-[0.95em] h-[0.95em]" />}
                     {item.label}
                   </button>
                 );
@@ -714,21 +752,25 @@ export default function App() {
           <main className="flex-1 grid grid-cols-[1.12fr_0.88fr] gap-4 pt-3 min-h-0 overflow-hidden">
             <div className="flex flex-col justify-between pr-4 border-r-[3px] border-[var(--border-color)] min-h-0 overflow-y-auto">
               {/* 大時鐘 */}
-              <div className="flex items-center justify-between border-b-[2px] border-[var(--border-color)] pb-3">
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b-[2px] border-[var(--border-color)] pb-3">
                 <div className={`${landscapeClockClass} font-black leading-[0.95] tracking-[-3px] font-num`}>
                   {timeDisplay}
                 </div>
-                <div className="text-right flex flex-col items-end gap-0.5">
+                <div className="text-right flex flex-col items-end gap-0.5 ml-auto">
                   <span
                     className={`${
-                      effectiveDeviceScale === 'tablet10' ? 'text-[17px]' : 'text-[14px]'
+                      effectiveDeviceScale === 'tablet10'
+                        ? 'text-[length:calc(19px*var(--fs))]'
+                        : 'text-[length:calc(15px*var(--fs))]'
                     } font-extrabold`}
                   >
                     {townPreset.name}
                   </span>
                   <span
                     className={`${
-                      effectiveDeviceScale === 'tablet10' ? 'text-[14px]' : 'text-[12px]'
+                      effectiveDeviceScale === 'tablet10'
+                        ? 'text-[length:calc(15.5px*var(--fs))]'
+                        : 'text-[length:calc(12.5px*var(--fs))]'
                     } font-semibold text-[var(--fg-muted)]`}
                   >
                     {todayInfo.holiday
@@ -737,7 +779,7 @@ export default function App() {
                         ? `二十四節氣 · ${todayInfo.solarTerm}`
                         : `農曆 ${todayInfo.lunarMonthText}${todayInfo.lunarDayText}`}
                   </span>
-                  <span className="text-[11px] font-semibold text-[var(--fg-muted)]">
+                  <span className="text-[length:calc(12.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
                     {backlightEval.shortLabel}
                     {backlightEval.isExtremePowerSave ? ' · 30分更新' : ''}
                   </span>
@@ -755,6 +797,7 @@ export default function App() {
                   requiresApiKey={requiresApiKey}
                   isLandscape={true}
                   deviceScale={effectiveDeviceScale}
+                  fontScale={fontScaleRatio}
                   onRefresh={fetchWeatherAndAQI}
                   onOpenSettings={openSettings}
                 />
@@ -802,6 +845,7 @@ export default function App() {
                 requiresApiKey={requiresApiKey}
                 isLandscape={false}
                 deviceScale={effectiveDeviceScale}
+                fontScale={fontScaleRatio}
                 onRefresh={fetchWeatherAndAQI}
                 onOpenSettings={openSettings}
               />
@@ -827,16 +871,102 @@ export default function App() {
         )}
       </div>
 
-      {/* 設定視窗（背光與省電 + 私人 API 金鑰本機儲存 + 閱讀器尺寸與地區） */}
+      {/* 設定視窗（字體大小 + 背光與省電 + 私人 API 金鑰本機儲存 + 閱讀器尺寸與地區） */}
       {isSettingsOpen && (
         <div className="fixed inset-0 bg-[var(--bg-color)] text-[var(--fg-color)] z-[100] p-4 sm:p-6 flex flex-col items-center overflow-y-auto">
-          <div className="w-full max-w-[580px] my-auto flex flex-col gap-4 border-2 border-[var(--border-color)] rounded-[10px] p-5">
+          <div className="w-full max-w-[640px] my-auto flex flex-col gap-4 border-2 border-[var(--border-color)] rounded-[10px] p-5">
             <div className="flex items-center justify-between border-b-2 border-[var(--border-color)] pb-2.5">
-              <h2 className="text-[20px] font-black">看板設定</h2>
+              <h2 className="text-[length:calc(20px*var(--fs-ctrl))] font-black">看板設定</h2>
               <button type="button" onClick={fetchWeatherAndAQI} className={btnClass}>
                 <RefreshCw className="w-3.5 h-3.5" />
                 立即更新氣象
               </button>
+            </div>
+
+            {/* 區塊零：字體大小調整（10.3 吋等大螢幕電子紙推薦放大） */}
+            <div className="flex flex-col gap-2.5 border-b border-[var(--border-subtle)] pb-4">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-[length:calc(15px*var(--fs-ctrl))] font-black flex items-center gap-1.5">
+                  <Type className="w-4 h-4 shrink-0" />
+                  字體大小調整（10.3 吋大螢幕必調）
+                </h3>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => stepDraftFontScale(-1)}
+                    disabled={draftFontScale === FONT_SCALE_OPTIONS[0].value}
+                    aria-label="縮小字體"
+                    className="px-2.5 py-1 text-[length:calc(13px*var(--fs-ctrl))] font-black border-[1.5px] border-[var(--border-color)] rounded-[6px] cursor-pointer disabled:opacity-35"
+                  >
+                    A-
+                  </button>
+                  <span className="min-w-[52px] text-center text-[length:calc(14px*var(--fs-ctrl))] font-black font-num">
+                    {draftFontScale}%
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => stepDraftFontScale(1)}
+                    disabled={
+                      draftFontScale === FONT_SCALE_OPTIONS[FONT_SCALE_OPTIONS.length - 1].value
+                    }
+                    aria-label="放大字體"
+                    className="px-2.5 py-1 text-[length:calc(13px*var(--fs-ctrl))] font-black border-[1.5px] border-[var(--border-color)] rounded-[6px] cursor-pointer disabled:opacity-35"
+                  >
+                    A+
+                  </button>
+                </div>
+              </div>
+
+              <div
+                role="group"
+                aria-label="字體大小級距選擇"
+                className="grid grid-cols-3 sm:grid-cols-6 border-[1.5px] border-[var(--border-color)] rounded-[6px] overflow-hidden"
+              >
+                {FONT_SCALE_OPTIONS.map((opt) => {
+                  const active = draftFontScale === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setDraftFontScale(opt.value)}
+                      aria-pressed={active}
+                      className={`py-2 px-1.5 flex flex-col items-center justify-center leading-tight cursor-pointer ${
+                        active
+                          ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                          : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
+                      }`}
+                    >
+                      <span className="text-[length:calc(13px*var(--fs-ctrl))] font-black">
+                        {opt.label}
+                      </span>
+                      <span className="text-[length:calc(11px*var(--fs-ctrl))] font-bold font-num opacity-80">
+                        {opt.short}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* 即時字體大小預覽 */}
+              <div
+                data-font-scale={String(draftFontScale)}
+                className="flex flex-wrap items-baseline justify-between gap-2 bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[8px] px-3.5 py-2.5"
+              >
+                <span className="text-[length:calc(28px*var(--fs))] font-black font-num leading-none">
+                  {timeDisplay}
+                </span>
+                <span className="text-[length:calc(18px*var(--fs))] font-extrabold font-num leading-tight">
+                  {weather ? `${weather.current.temp}° ${weather.current.wxText}` : '24° 多雲時晴'}
+                </span>
+                <span className="text-[length:calc(13.5px*var(--fs))] font-bold text-[var(--fg-muted)] leading-tight">
+                  農曆 {todayInfo.lunarMonthText}
+                  {todayInfo.lunarDayText} · 預覽大小
+                </span>
+              </div>
+
+              <p className="text-[length:calc(12px*var(--fs-ctrl))] font-semibold text-[var(--fg-muted)] leading-[1.45]">
+                10.3 吋高解析電子紙閱讀器（如 BOOX 10.3）建議選擇「大字 130%」或「特大 150%」，遠距桌面擺放可調至「超大 170%」。
+              </p>
             </div>
 
             {/* 區塊一：背光與極致省電設定 */}
@@ -1118,8 +1248,8 @@ export default function App() {
               </div>
               <ol className="list-decimal pl-4 flex flex-col gap-1.5 text-[12px] leading-[1.5] font-semibold">
                 <li>
-                  <span className="font-extrabold">尺寸與直橫排版：</span>
-                  支援 6 吋原生閱讀器、10.3 吋黑白（如 BOOX 10.3）及手機型閱讀器（如 Viwoods AiPaper），頂部可一鍵切換「自動／直向／橫向」。
+                  <span className="font-extrabold">字體大小與尺寸排版：</span>
+                  支援 6 吋原生閱讀器、10.3 吋黑白（如 BOOX 10.3）及手機型閱讀器（如 Viwoods AiPaper），可在設定最上方自由調整 85%～170% 字體大小（10.3 吋建議 130%～150%），頂部亦可一鍵切換「自動／直向／橫向」。
                 </li>
                 <li>
                   <span className="font-extrabold">電子紙防殘影：</span>

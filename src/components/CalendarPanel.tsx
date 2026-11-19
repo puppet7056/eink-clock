@@ -119,19 +119,19 @@ export function CalendarPanel({
 
   const dayNumClass =
     deviceScale === 'tablet10'
-      ? 'text-[18px]'
+      ? 'text-[length:calc(20px*var(--fs))]'
       : deviceScale === 'phone'
-        ? 'text-[12px]'
+        ? 'text-[length:calc(12.5px*var(--fs))]'
         : isLandscape
-          ? 'text-[14px]'
-          : 'text-[13px]';
+          ? 'text-[length:calc(15px*var(--fs))]'
+          : 'text-[length:calc(14px*var(--fs))]';
 
   const lunarSubClass =
     deviceScale === 'tablet10'
-      ? 'text-[12px]'
+      ? 'text-[length:calc(13px*var(--fs))]'
       : deviceScale === 'phone'
-        ? 'text-[9px]'
-        : 'text-[10px]';
+        ? 'text-[length:calc(9.5px*var(--fs))]'
+        : 'text-[length:calc(10.5px*var(--fs))]';
 
   return (
     <section className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -149,7 +149,9 @@ export function CalendarPanel({
               aria-selected={view === 'month'}
               onClick={() => setView('month')}
               className={`${
-                deviceScale === 'tablet10' ? 'px-3 py-1 text-[13px]' : 'px-2.5 py-0.5 text-[12px]'
+                deviceScale === 'tablet10'
+                  ? 'px-3 py-1 text-[length:calc(14.5px*var(--fs-ctrl))]'
+                  : 'px-2.5 py-0.5 text-[length:calc(12.5px*var(--fs-ctrl))]'
               } font-extrabold whitespace-nowrap cursor-pointer ${
                 view === 'month'
                   ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
@@ -164,7 +166,9 @@ export function CalendarPanel({
               aria-selected={view === 'agenda'}
               onClick={() => setView('agenda')}
               className={`${
-                deviceScale === 'tablet10' ? 'px-3 py-1 text-[13px]' : 'px-2.5 py-0.5 text-[12px]'
+                deviceScale === 'tablet10'
+                  ? 'px-3 py-1 text-[length:calc(14.5px*var(--fs-ctrl))]'
+                  : 'px-2.5 py-0.5 text-[length:calc(12.5px*var(--fs-ctrl))]'
               } font-extrabold whitespace-nowrap cursor-pointer ${
                 view === 'agenda'
                   ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
@@ -183,11 +187,13 @@ export function CalendarPanel({
                 aria-label="上個月"
                 className="p-1 rounded border border-[var(--border-subtle)] hover:border-[var(--border-color)] cursor-pointer"
               >
-                <ChevronLeft className="w-3.5 h-3.5" />
+                <ChevronLeft className="w-4 h-4" />
               </button>
               <span
                 className={`${
-                  deviceScale === 'tablet10' ? 'text-[16px]' : 'text-[13px]'
+                  deviceScale === 'tablet10'
+                    ? 'text-[length:calc(18px*var(--fs))]'
+                    : 'text-[length:calc(14px*var(--fs))]'
                 } font-extrabold font-num whitespace-nowrap px-1`}
               >
                 {cursorYear}年{cursorMonth + 1}月
@@ -198,13 +204,13 @@ export function CalendarPanel({
                 aria-label="下個月"
                 className="p-1 rounded border border-[var(--border-subtle)] hover:border-[var(--border-color)] cursor-pointer"
               >
-                <ChevronRight className="w-3.5 h-3.5" />
+                <ChevronRight className="w-4 h-4" />
               </button>
               {!isViewingCurrentMonth && (
                 <button
                   type="button"
                   onClick={handleGoToday}
-                  className="ml-0.5 px-1.5 py-0.5 text-[11px] font-bold border border-[var(--border-color)] rounded cursor-pointer whitespace-nowrap"
+                  className="ml-0.5 px-2 py-0.5 text-[length:calc(12px*var(--fs-ctrl))] font-bold border border-[var(--border-color)] rounded cursor-pointer whitespace-nowrap"
                 >
                   今天
                 </button>
@@ -215,7 +221,9 @@ export function CalendarPanel({
 
         <span
           className={`${
-            deviceScale === 'tablet10' ? 'text-[13px]' : 'text-[11px]'
+            deviceScale === 'tablet10'
+              ? 'text-[length:calc(14.5px*var(--fs))]'
+              : 'text-[length:calc(12px*var(--fs))]'
           } font-bold text-[var(--fg-muted)] whitespace-nowrap truncate`}
         >
           {view === 'month'
@@ -237,7 +245,9 @@ export function CalendarPanel({
               <div
                 key={wd}
                 className={`${
-                  deviceScale === 'tablet10' ? 'text-[13px]' : 'text-[11px]'
+                  deviceScale === 'tablet10'
+                    ? 'text-[length:calc(14.5px*var(--fs))]'
+                    : 'text-[length:calc(12px*var(--fs))]'
                 } font-extrabold ${
                   idx === 0 || idx === 6 ? 'underline underline-offset-2' : 'text-[var(--fg-muted)]'
                 }`}
@@ -307,11 +317,15 @@ export function CalendarPanel({
 
           {/* Selected Day Info Strip */}
           <div
-            className={`pt-1.5 flex items-center justify-between gap-2 ${
-              deviceScale === 'tablet10' ? 'text-[14px]' : deviceScale === 'phone' ? 'text-[11px]' : 'text-[12px]'
+            className={`pt-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 ${
+              deviceScale === 'tablet10'
+                ? 'text-[length:calc(15.5px*var(--fs))]'
+                : deviceScale === 'phone'
+                  ? 'text-[length:calc(11.5px*var(--fs))]'
+                  : 'text-[length:calc(13px*var(--fs))]'
             } shrink-0`}
           >
-            <div className="flex items-center gap-1.5 min-w-0 truncate">
+            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
               <span className="font-extrabold font-num whitespace-nowrap">
                 {selectedInfo.month}/{selectedInfo.day}（{selectedInfo.weekdayLabel}）
               </span>
@@ -344,7 +358,7 @@ export function CalendarPanel({
               )}
             </div>
             {selectedDayEvents.length > 0 && (
-              <span className="text-[11px] font-extrabold whitespace-nowrap truncate max-w-[40%]">
+              <span className="text-[length:calc(12.5px*var(--fs))] font-extrabold whitespace-nowrap truncate max-w-full">
                 行程：{selectedDayEvents[0].summary}
                 {selectedDayEvents.length > 1 ? ` +${selectedDayEvents.length - 1}` : ''}
               </span>
@@ -359,7 +373,9 @@ export function CalendarPanel({
           {/* Today's Lunar & Holiday Summary */}
           <div
             className={`flex flex-wrap items-center justify-between gap-1 ${
-              deviceScale === 'tablet10' ? 'text-[14px] px-3 py-2' : 'text-[12px] px-2.5 py-1.5'
+              deviceScale === 'tablet10'
+                ? 'text-[length:calc(15.5px*var(--fs))] px-3 py-2'
+                : 'text-[length:calc(13px*var(--fs))] px-2.5 py-1.5'
             } font-bold bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[6px] shrink-0`}
           >
             <span>
@@ -380,24 +396,24 @@ export function CalendarPanel({
 
           {/* Google Calendar Events */}
           <div className="flex flex-col">
-            <div className="text-[11px] font-extrabold text-[var(--fg-muted)] pb-1">
+            <div className="text-[length:calc(12.5px*var(--fs))] font-extrabold text-[var(--fg-muted)] pb-1">
               Google 日曆行程
             </div>
             {!hasIcalUrl ? (
-              <div className="flex items-center justify-between gap-2 py-2 border-t border-[var(--border-subtle)] text-[13px]">
+              <div className="flex items-center justify-between gap-2 py-2 border-t border-[var(--border-subtle)] text-[length:calc(14px*var(--fs))]">
                 <span className="font-semibold text-[var(--fg-muted)]">
                   尚未連結 Google 日曆 iCal 網址
                 </span>
                 <button
                   type="button"
                   onClick={onOpenSettings}
-                  className="px-2.5 py-1 text-[12px] font-bold border-[1.5px] border-[var(--border-color)] rounded-[5px] cursor-pointer whitespace-nowrap"
+                  className="px-2.5 py-1 text-[length:calc(13px*var(--fs-ctrl))] font-bold border-[1.5px] border-[var(--border-color)] rounded-[5px] cursor-pointer whitespace-nowrap"
                 >
                   前往設定
                 </button>
               </div>
             ) : events.length === 0 ? (
-              <div className="py-2 border-t border-[var(--border-subtle)] text-[13px] font-semibold text-[var(--fg-muted)]">
+              <div className="py-2 border-t border-[var(--border-subtle)] text-[length:calc(14px*var(--fs))] font-semibold text-[var(--fg-muted)]">
                 近期無排定行程
               </div>
             ) : (
@@ -406,10 +422,12 @@ export function CalendarPanel({
                   <li
                     key={ev.id}
                     className={`py-2 flex items-center gap-3 ${
-                      deviceScale === 'tablet10' ? 'text-[16px]' : 'text-[14px]'
+                      deviceScale === 'tablet10'
+                        ? 'text-[length:calc(17.5px*var(--fs))]'
+                        : 'text-[length:calc(14.5px*var(--fs))]'
                     }`}
                   >
-                    <span className="text-[12px] font-extrabold font-num whitespace-nowrap w-[84px] shrink-0">
+                    <span className="text-[length:calc(13.5px*var(--fs))] font-extrabold font-num whitespace-nowrap min-w-[6.2em] shrink-0">
                       {ev.timeLabel}
                     </span>
                     <span className="font-bold truncate">{ev.summary}</span>
@@ -422,7 +440,7 @@ export function CalendarPanel({
           {/* Upcoming Taiwan National Holidays */}
           {upcomingHolidays.length > 0 && (
             <div className="flex flex-col pt-1">
-              <div className="text-[11px] font-extrabold text-[var(--fg-muted)] pb-1">
+              <div className="text-[length:calc(12.5px*var(--fs))] font-extrabold text-[var(--fg-muted)] pb-1">
                 近期台灣國定假日
               </div>
               <ul className="list-none flex flex-col divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
@@ -430,20 +448,22 @@ export function CalendarPanel({
                   <li
                     key={`${h.date.getTime()}-${h.name}`}
                     className={`py-1.5 flex items-center justify-between gap-2 ${
-                      deviceScale === 'tablet10' ? 'text-[15px]' : 'text-[13px]'
+                      deviceScale === 'tablet10'
+                        ? 'text-[length:calc(16.5px*var(--fs))]'
+                        : 'text-[length:calc(14px*var(--fs))]'
                     }`}
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <span className="text-[12px] font-extrabold font-num whitespace-nowrap w-[78px] shrink-0">
+                      <span className="text-[length:calc(13.5px*var(--fs))] font-extrabold font-num whitespace-nowrap min-w-[5.6em] shrink-0">
                         {h.date.getMonth() + 1}/{h.date.getDate()}（
                         {WEEKDAY_HEADERS[h.date.getDay()]}）
                       </span>
                       <span className="font-extrabold truncate">{h.name}</span>
-                      <span className="text-[11px] font-semibold text-[var(--fg-muted)] whitespace-nowrap">
+                      <span className="text-[length:calc(12.5px*var(--fs))] font-semibold text-[var(--fg-muted)] whitespace-nowrap">
                         農曆 {h.lunarText}
                       </span>
                     </div>
-                    <span className="text-[11px] font-bold font-num text-[var(--fg-muted)] whitespace-nowrap">
+                    <span className="text-[length:calc(12.5px*var(--fs))] font-bold font-num text-[var(--fg-muted)] whitespace-nowrap">
                       {h.daysUntil === 0 ? '今天' : `${h.daysUntil} 天後`}
                     </span>
                   </li>
