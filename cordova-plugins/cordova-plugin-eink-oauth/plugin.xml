@@ -9,7 +9,7 @@
 
   <preference name="URL_SCHEME" default="tw.eink.clockdashboard.oauth" />
 
-  <js-module src="www/einkOAuth.js" name="EInkOAuth">
+  <js-module src="js/einkOAuth.js" name="EInkOAuth">
     <clobbers target="window.EInkOAuth" />
   </js-module>
 

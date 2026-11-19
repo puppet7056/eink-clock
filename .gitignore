@@ -1,9 +1,9 @@
 node_modules/
-build/
-dist/
-www/
-platforms/
-plugins/
+/build/
+/dist/
+/www/
+/platforms/
+/plugins/
 coverage/
 .DS_Store
 *.log
