@@ -81,6 +81,7 @@ jobs:
           VITE_APP_VERSION_CODE: ${{ env.APP_VERSION_CODE }}
           VITE_GITHUB_REPO: ${{ github.repository }}
           VITE_ANDROID_OAUTH_CLIENT_ID: ${{ env.ANDROID_OAUTH_CLIENT_ID }}
+          VITE_CORDOVA_BUILD: '1'
         run: |
           npm install
           npm run build

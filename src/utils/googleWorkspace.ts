@@ -1,11 +1,4 @@
-import { getApp, getApps, initializeApp } from 'firebase/app';
-import {
-  getAuth,
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  signInWithPopup,
-  type User,
-} from 'firebase/auth';
+import type { Auth, GoogleAuthProvider as GoogleAuthProviderType, User } from 'firebase/auth';
 import androidOAuthConfig from '../../android-oauth-config.json';
 import firebaseConfig from '../../firebase-applet-config.json';
 import type { CalendarEventItem } from '../components/CalendarPanel';
@@ -65,14 +58,50 @@ declare global {
   }
 }
 
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-const auth = getAuth(app);
-
-const provider = new GoogleAuthProvider();
-for (const scope of GOOGLE_WORKSPACE_SCOPES) {
-  provider.addScope(scope);
+interface LazyFirebaseAuthContext {
+  auth: Auth;
+  provider: GoogleAuthProviderType;
+  GoogleAuthProvider: typeof import('firebase/auth').GoogleAuthProvider;
+  signInWithPopup: typeof import('firebase/auth').signInWithPopup;
+  onAuthStateChanged: typeof import('firebase/auth').onAuthStateChanged;
 }
-provider.setCustomParameters({ prompt: 'select_account' });
+
+let lazyFirebasePromise: Promise<LazyFirebaseAuthContext> | null = null;
+
+/**
+ * Lazily initializes Firebase Auth ONLY when needed in Web mode.
+ * Avoids eagerly loading Firebase SDK / IndexedDB on older Android E-Ink APK WebViews
+ * (which use native Android PKCE OAuth instead).
+ */
+async function loadWebFirebaseAuth(): Promise<LazyFirebaseAuthContext> {
+  if (!lazyFirebasePromise) {
+    lazyFirebasePromise = Promise.all([import('firebase/app'), import('firebase/auth')])
+      .then(([firebaseApp, firebaseAuth]) => {
+        const app =
+          firebaseApp.getApps().length > 0
+            ? firebaseApp.getApp()
+            : firebaseApp.initializeApp(firebaseConfig);
+        const auth = firebaseAuth.getAuth(app);
+        const provider = new firebaseAuth.GoogleAuthProvider();
+        for (const scope of GOOGLE_WORKSPACE_SCOPES) {
+          provider.addScope(scope);
+        }
+        provider.setCustomParameters({ prompt: 'select_account' });
+        return {
+          auth,
+          provider,
+          GoogleAuthProvider: firebaseAuth.GoogleAuthProvider,
+          signInWithPopup: firebaseAuth.signInWithPopup,
+          onAuthStateChanged: firebaseAuth.onAuthStateChanged,
+        };
+      })
+      .catch((err) => {
+        lazyFirebasePromise = null;
+        throw err;
+      });
+  }
+  return lazyFirebasePromise;
+}
 
 // Flag to indicate if we are in the middle of a web sign-in flow.
 let isSigningIn = false;
@@ -116,14 +145,23 @@ function base64UrlEncode(bytes: Uint8Array): string {
 
 function generateRandomBase64Url(byteLength: number): string {
   const bytes = new Uint8Array(byteLength);
-  crypto.getRandomValues(bytes);
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < byteLength; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
   return base64UrlEncode(bytes);
 }
 
-async function sha256Base64Url(input: string): Promise<string> {
-  const data = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return base64UrlEncode(new Uint8Array(digest));
+async function sha256Base64Url(input: string): Promise<{ challenge: string; method: 'S256' | 'plain' }> {
+  if (typeof crypto !== 'undefined' && crypto.subtle && typeof crypto.subtle.digest === 'function') {
+    const data = new TextEncoder().encode(input);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    return { challenge: base64UrlEncode(new Uint8Array(digest)), method: 'S256' };
+  }
+  return { challenge: input, method: 'plain' };
 }
 
 function savePkceHandshake(handshake: { codeVerifier: string; state: string; createdAt: number }): void {
@@ -169,7 +207,7 @@ function consumePkceHandshake(): { codeVerifier: string; state: string; createdA
 
 /**
  * Initiates native Android OAuth 2.0 + PKCE sign-in by launching the system browser
- * (BOOX NeoBrowser / Chrome / etc. — no GMS required). Google redirects back to
+ * (BOOX NeoBrowser / Chrome / HanLinYue Browser — no GMS required). Google redirects back to
  * `com.googleusercontent.apps.<clientIdPrefix>:/oauth2redirect` which Android routes
  * straight back into our running Cordova APK via EInkOAuthPlugin.onNewIntent().
  */
@@ -182,7 +220,7 @@ export async function startAndroidNativeGoogleSignIn(): Promise<void> {
   }
 
   const codeVerifier = generateRandomBase64Url(32);
-  const codeChallenge = await sha256Base64Url(codeVerifier);
+  const pkce = await sha256Base64Url(codeVerifier);
   const state = generateRandomBase64Url(18);
   const redirectUri = getAndroidRedirectUri(clientId);
 
@@ -193,8 +231,8 @@ export async function startAndroidNativeGoogleSignIn(): Promise<void> {
     redirect_uri: redirectUri,
     response_type: 'code',
     scope: GOOGLE_WORKSPACE_SCOPES.join(' '),
-    code_challenge: codeChallenge,
-    code_challenge_method: 'S256',
+    code_challenge: pkce.challenge,
+    code_challenge_method: pkce.method,
     state,
     access_type: 'offline',
     prompt: 'select_account consent',
@@ -213,7 +251,6 @@ export async function startAndroidNativeGoogleSignIn(): Promise<void> {
     return;
   }
 
-  // Fallback for environments where Cordova plugin bridge isn't ready yet
   window.location.href = authUrl;
 }
 
@@ -296,10 +333,6 @@ async function exchangeAndroidAuthCode(callbackUrl: string): Promise<{
   };
 }
 
-/**
- * Registers the Cordova deep-link callback listener so Android automatically delivers
- * `com.googleusercontent.apps.<prefix>:/oauth2redirect?code=...` back to the app.
- */
 export function initAndroidNativeOAuthListener(
   onAuthSuccess: (account: GoogleAccountProfile, token: string) => void,
   onAuthError: (message: string) => void
@@ -348,10 +381,6 @@ export function initAndroidNativeOAuthListener(
   };
 }
 
-/**
- * Silently refreshes the in-memory Android OAuth access token using the in-memory
- * refresh token when approaching expiry (keeps 24/7 E-Ink desk clock running nonstop).
- */
 export async function refreshAndroidGoogleTokenIfNeeded(force = false): Promise<string | null> {
   if (!cachedRefreshToken) return cachedAccessToken;
   if (!force && cachedAccessToken && Date.now() < cachedTokenExpiresAt) {
@@ -400,24 +429,44 @@ export function initGoogleAuth(
   onAuthSuccess?: (account: GoogleAccountProfile, token: string) => void,
   onAuthFailure?: (signedInAccountWithoutToken: GoogleAccountProfile | null) => void
 ): () => void {
-  return onAuthStateChanged(auth, (user: User | null) => {
-    if (user) {
-      const profile: GoogleAccountProfile = {
-        email: user.email || 'Google 帳號',
-        displayName: user.displayName,
-        authMode: 'web-firebase',
-      };
-      if (cachedAccessToken) {
-        onAuthSuccess?.(profile, cachedAccessToken);
-      } else if (!isSigningIn) {
+  let cancelled = false;
+  let unsubscribeFirebase: (() => void) | null = null;
+
+  loadWebFirebaseAuth()
+    .then(({ auth, onAuthStateChanged }) => {
+      if (cancelled) return;
+      unsubscribeFirebase = onAuthStateChanged(auth, (user: User | null) => {
+        if (user) {
+          const profile: GoogleAccountProfile = {
+            email: user.email || 'Google 帳號',
+            displayName: user.displayName,
+            authMode: 'web-firebase',
+          };
+          if (cachedAccessToken) {
+            onAuthSuccess?.(profile, cachedAccessToken);
+          } else if (!isSigningIn) {
+            cachedAccessToken = null;
+            onAuthFailure?.(profile);
+          }
+        } else if (!cachedRefreshToken) {
+          cachedAccessToken = null;
+          onAuthFailure?.(null);
+        }
+      });
+    })
+    .catch(() => {
+      if (!cancelled) {
         cachedAccessToken = null;
-        onAuthFailure?.(profile);
+        onAuthFailure?.(null);
       }
-    } else if (!cachedRefreshToken) {
-      cachedAccessToken = null;
-      onAuthFailure?.(null);
+    });
+
+  return () => {
+    cancelled = true;
+    if (unsubscribeFirebase) {
+      unsubscribeFirebase();
     }
-  });
+  };
 }
 
 function mapFirebaseAuthError(error: unknown): string {
@@ -450,6 +499,7 @@ export async function googleSignIn(): Promise<{
 }> {
   try {
     isSigningIn = true;
+    const { auth, provider, GoogleAuthProvider, signInWithPopup } = await loadWebFirebaseAuth();
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
@@ -500,10 +550,13 @@ export async function googleLogout(): Promise<void> {
     });
   }
 
-  try {
-    await auth.signOut();
-  } catch {
-    // ignore if signed in via Android native OAuth without Firebase session
+  if (lazyFirebasePromise) {
+    try {
+      const { auth } = await lazyFirebasePromise;
+      await auth.signOut();
+    } catch {
+      // ignore if signed in via Android native OAuth without Firebase session
+    }
   }
 }
 
