@@ -1,0 +1,16 @@
+{
+  "name": "cordova-plugin-eink-oauth",
+  "version": "1.0.0",
+  "description": "Native Android system-browser OAuth 2.0 PKCE and custom URI scheme callback plugin for E-Ink Clock Dashboard",
+  "cordova": {
+    "id": "cordova-plugin-eink-oauth",
+    "platforms": [
+      "android"
+    ]
+  },
+  "keywords": [
+    "ecosystem:cordova",
+    "cordova-android"
+  ],
+  "license": "MIT"
+}
