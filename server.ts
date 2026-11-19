@@ -216,26 +216,70 @@ async function startServer() {
   });
 
   app.get('/api/ical', async (req, res) => {
-    const rawUrl = typeof req.query.url === 'string' ? req.query.url.trim() : '';
-    if (!rawUrl) {
+    const rawInput = typeof req.query.url === 'string' ? req.query.url.trim() : '';
+    if (!rawInput) {
       res.status(400).json({ error: '缺少 iCal 網址' });
       return;
     }
 
+    const normalizedUrl = rawInput.replace(/^webcals?:\/\//i, 'https://');
+
     try {
-      const parsed = new URL(rawUrl);
+      const parsed = new URL(normalizedUrl);
       if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-        res.status(400).json({ error: '無效的網址協定' });
+        res.status(400).json({ error: '無效的網址協定，請貼上 https:// 開頭的 .ics 網址' });
         return;
       }
+      if (
+        parsed.hostname.includes('calendar.google.com') &&
+        /\/calendar\/(embed|u\/|r\b)/i.test(parsed.pathname)
+      ) {
+        res.status(400).json({
+          error:
+            '這是 Google 日曆網頁／嵌入連結，非 iCal 檔案。請至電腦版 Google 日曆「設定和共用 → 整合日曆」複製「iCal 格式的秘密網址」（結尾為 basic.ics）。',
+        });
+        return;
+      }
+
       const r = await fetch(parsed.toString(), {
-        headers: { 'User-Agent': 'Mozilla/5.0' },
+        redirect: 'follow',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; EInkDashboard/1.0)',
+          Accept: 'text/calendar, text/plain;q=0.9, */*;q=0.8',
+        },
       });
-      if (!r.ok) throw new Error(`iCal HTTP ${r.status}`);
+
+      if (r.status === 404) {
+        res.status(404).json({
+          error:
+            'Google 日曆回傳 404（找不到日曆）：若複製的是「公開網址」，請先勾選公開，或改貼上「iCal 格式的秘密網址」（含 private-.../basic.ics）。',
+        });
+        return;
+      }
+      if (r.status === 401 || r.status === 403) {
+        res.status(r.status).json({
+          error: `無權限存取此日曆 (HTTP ${r.status})，請改用 Google 日曆「iCal 格式的秘密網址 (.ics)」。`,
+        });
+        return;
+      }
+      if (!r.ok) {
+        res.status(502).json({ error: `無法取得日曆資料 (HTTP ${r.status})` });
+        return;
+      }
+
       const text = await r.text();
+      if (!text.includes('BEGIN:VCALENDAR')) {
+        res.status(422).json({
+          error:
+            '取得的內容為網頁而非 .ics 檔，請確認複製的是 Google 日曆「iCal 格式的秘密網址」（結尾為 basic.ics），而非網頁連結。',
+        });
+        return;
+      }
+
       res.type('text/calendar; charset=utf-8').send(text);
-    } catch {
-      res.status(502).json({ error: '日曆同步失敗' });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : '連線失敗';
+      res.status(502).json({ error: `日曆同步連線失敗：${detail}` });
     }
   });
 

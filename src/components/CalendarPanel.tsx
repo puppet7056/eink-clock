@@ -22,6 +22,7 @@ interface CalendarPanelProps {
   events: CalendarEventItem[];
   hasIcalUrl: boolean;
   syncStatus: string;
+  calendarError?: string | null;
   isLandscape: boolean;
   deviceScale: DeviceScale;
   onOpenSettings: () => void;
@@ -36,6 +37,7 @@ export function CalendarPanel({
   events,
   hasIcalUrl,
   syncStatus,
+  calendarError = null,
   isLandscape,
   deviceScale,
   onOpenSettings,
@@ -88,6 +90,11 @@ export function CalendarPanel({
   const selectedDayEvents = useMemo(
     () => events.filter((ev) => isSameDay(ev.date, selectedDate)),
     [events, selectedDate]
+  );
+
+  const upcomingEvents = useMemo(
+    () => events.filter((ev) => ev.date >= stableToday),
+    [events, stableToday]
   );
 
   const handlePrevMonth = () => {
@@ -181,6 +188,11 @@ export function CalendarPanel({
               }`}
             >
               近期日程
+              {hasIcalUrl && calendarError
+                ? ' (!)'
+                : hasIcalUrl && upcomingEvents.length > 0
+                  ? ` (${upcomingEvents.length})`
+                  : ''}
             </button>
           </div>
 
@@ -224,21 +236,36 @@ export function CalendarPanel({
           )}
         </div>
 
-        <span
-          className={`${
-            deviceScale === 'tablet10'
-              ? 'text-[length:calc(14.5px*var(--fs))]'
-              : 'text-[length:calc(12px*var(--fs))]'
-          } font-bold text-[var(--fg-muted)] whitespace-nowrap truncate`}
-        >
-          {view === 'month'
-            ? nextHoliday
-              ? nextHoliday.daysUntil === 0
-                ? `今日：${nextHoliday.name}`
-                : `距 ${nextHoliday.name} ${nextHoliday.daysUntil} 天`
-              : `農曆 ${todayInfo.lunarFull}`
-            : syncStatus}
-        </span>
+        {view === 'month' && hasIcalUrl && calendarError ? (
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className={`${
+              deviceScale === 'tablet10'
+                ? 'text-[length:calc(13.5px*var(--fs))]'
+                : 'text-[length:calc(11.5px*var(--fs))]'
+            } font-black underline underline-offset-2 whitespace-nowrap truncate cursor-pointer`}
+            title={calendarError}
+          >
+            日曆同步異常（點此檢查）
+          </button>
+        ) : (
+          <span
+            className={`${
+              deviceScale === 'tablet10'
+                ? 'text-[length:calc(14.5px*var(--fs))]'
+                : 'text-[length:calc(12px*var(--fs))]'
+            } font-bold text-[var(--fg-muted)] whitespace-nowrap truncate`}
+          >
+            {view === 'month'
+              ? nextHoliday
+                ? nextHoliday.daysUntil === 0
+                  ? `今日：${nextHoliday.name}`
+                  : `距 ${nextHoliday.name} ${nextHoliday.daysUntil} 天`
+                : `農曆 ${todayInfo.lunarFull}`
+              : syncStatus}
+          </span>
+        )}
       </div>
 
       {/* MONTH VIEW (Gregorian + Lunar + Taiwan National Holidays + 24 Solar Terms) */}
@@ -295,7 +322,7 @@ export function CalendarPanel({
                     <span className={`${dayNumClass} font-extrabold font-num`}>{info.day}</span>
                     {hasEvent && (
                       <span
-                        className={`w-1.5 h-1.5 rounded-full ${
+                        className={`w-2 h-2 rounded-full ${
                           isToday ? 'bg-[var(--fg-inverse)]' : 'bg-[var(--fg-color)]'
                         }`}
                         aria-label="有行程"
@@ -364,12 +391,20 @@ export function CalendarPanel({
                 </>
               )}
             </div>
-            {selectedDayEvents.length > 0 && (
+            {selectedDayEvents.length > 0 ? (
               <span className="text-[length:calc(12.5px*var(--fs))] font-extrabold whitespace-nowrap truncate max-w-full">
                 行程：{selectedDayEvents[0].summary}
                 {selectedDayEvents.length > 1 ? ` +${selectedDayEvents.length - 1}` : ''}
               </span>
-            )}
+            ) : hasIcalUrl && calendarError ? (
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="text-[length:calc(12px*var(--fs))] font-bold underline underline-offset-2 truncate max-w-full cursor-pointer"
+              >
+                {calendarError}
+              </button>
+            ) : null}
           </div>
         </div>
       )}
@@ -419,13 +454,26 @@ export function CalendarPanel({
                   前往設定
                 </button>
               </div>
-            ) : events.length === 0 ? (
+            ) : calendarError ? (
+              <div className="flex flex-col gap-2 py-2 px-2.5 border border-[var(--border-color)] rounded-[6px] bg-[var(--surface-subtle)] text-[length:calc(13px*var(--fs))]">
+                <span className="font-extrabold leading-[1.45]">{calendarError}</span>
+                <div>
+                  <button
+                    type="button"
+                    onClick={onOpenSettings}
+                    className="px-2.5 py-1 text-[length:calc(12.5px*var(--fs-ctrl))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[5px] bg-[var(--bg-color)] cursor-pointer whitespace-nowrap"
+                  >
+                    檢查 iCal 網址設定
+                  </button>
+                </div>
+              </div>
+            ) : upcomingEvents.length === 0 ? (
               <div className="py-2 border-t border-[var(--border-subtle)] text-[length:calc(14px*var(--fs))] font-semibold text-[var(--fg-muted)]">
-                近期無排定行程
+                未來 60 天內無排定行程（{syncStatus}）
               </div>
             ) : (
               <ul className="list-none flex flex-col divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
-                {events.slice(0, 6).map((ev) => (
+                {upcomingEvents.slice(0, 10).map((ev) => (
                   <li
                     key={ev.id}
                     className={`py-2 flex items-center gap-3 ${

@@ -9,6 +9,8 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -45,7 +47,20 @@ jobs:
           yes | "$SDKMANAGER" --sdk_root="${SDK_DIR}" --licenses > /dev/null 2>&1 || true
           yes | "$SDKMANAGER" --sdk_root="${SDK_DIR}" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
+      - name: Compute auto-incrementing release version
+        run: |
+          RUN_NUM="${GITHUB_RUN_NUMBER:-1}"
+          VER_NAME="1.0.${RUN_NUM}"
+          VER_CODE=$((10000 + RUN_NUM))
+          echo "APP_VERSION=${VER_NAME}" >> "$GITHUB_ENV"
+          echo "APP_VERSION_CODE=${VER_CODE}" >> "$GITHUB_ENV"
+          echo "Version -> v${VER_NAME} (versionCode=${VER_CODE})"
+
       - name: Install dependencies & build web assets
+        env:
+          VITE_APP_VERSION: ${{ env.APP_VERSION }}
+          VITE_APP_VERSION_CODE: ${{ env.APP_VERSION_CODE }}
+          VITE_GITHUB_REPO: ${{ github.repository }}
         run: |
           npm install
           npm run build
@@ -53,13 +68,42 @@ jobs:
       - name: Install Cordova CLI
         run: npm install -g cordova
 
-      - name: Prepare Cordova www directory & CommonJS package.json for Cordova
+      - name: Setup persistent Android Debug Keystore (enables in-place APK upgrades)
+        env:
+          CUSTOM_KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        run: |
+          mkdir -p "$HOME/.android"
+          echo "ANDROID_USER_HOME=$HOME/.android" >> "$GITHUB_ENV"
+          if [ -n "$CUSTOM_KEYSTORE_B64" ]; then
+            echo "$CUSTOM_KEYSTORE_B64" | base64 -d > "$HOME/.android/debug.keystore"
+            echo "Loaded custom debug keystore from GitHub Secret."
+          else
+            base64 -d scripts/debug.keystore.b64 > "$HOME/.android/debug.keystore"
+            echo "Loaded repository persistent debug keystore (scripts/debug.keystore.b64)."
+          fi
+          keytool -list -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey
+
+      - name: Prepare Cordova www directory, auto-bump versionCode & CommonJS package.json
         run: |
           rm -rf www
           mkdir -p www
           cp -r dist/* www/
           # Remove "type": "module" in CI workspace after Vite build so cordova-android's CommonJS Api.js loads cleanly
           node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); delete p.type; fs.writeFileSync('package.json', JSON.stringify(p, null, 2));"
+          node -e "
+            const fs = require('fs');
+            const verName = process.env.APP_VERSION;
+            const verCode = process.env.APP_VERSION_CODE;
+            let xml = fs.readFileSync('config.xml', 'utf8');
+            xml = xml.replace(/version=\"[^\"]+\"/, 'version=\"' + verName + '\"');
+            if (/android-versionCode=\"[^\"]+\"/.test(xml)) {
+              xml = xml.replace(/android-versionCode=\"[^\"]+\"/, 'android-versionCode=\"' + verCode + '\"');
+            } else {
+              xml = xml.replace(/version=\"' + verName + '\"/, 'version=\"' + verName + '\" android-versionCode=\"' + verCode + '\"');
+            }
+            fs.writeFileSync('config.xml', xml, 'utf8');
+            console.log('Updated config.xml -> version=' + verName + ', android-versionCode=' + verCode);
+          "
 
       - name: Add Android platform and plugins
         run: |
@@ -74,8 +118,11 @@ jobs:
           cordova plugin ls
           cordova requirements android
 
-      - name: Build Debug APK
-        run: cordova build android --debug
+      - name: Build Debug APK & verify persistent signature
+        run: |
+          cordova build android --debug
+          "${ANDROID_HOME}/build-tools/34.0.0/apksigner" verify --print-certs platforms/android/app/build/outputs/apk/debug/app-debug.apk
+          cp platforms/android/app/build/outputs/apk/debug/app-debug.apk "eink-clock-v${APP_VERSION}.apk"
 
       - name: Upload app-debug.apk artifact
         uses: actions/upload-artifact@v6
@@ -83,3 +130,20 @@ jobs:
           name: eink-clock-debug-apk
           path: platforms/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Publish GitHub Release with APK (for in-app update download)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${APP_VERSION}"
+          APK_FILE="eink-clock-v${APP_VERSION}.apk"
+          COMMIT_MSG="$(git log -1 --pretty=%s 2>/dev/null || echo '自動建置更新')"
+          NOTES="電子紙時鐘自動建置版本 ${TAG}（Build ${APP_VERSION_CODE}）\n更新摘要：${COMMIT_MSG}\n\n已採用固定簽章，下載 APK 後可直接覆蓋安裝並保留原有設定。"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${APK_FILE}" --clobber
+          else
+            gh release create "${TAG}" "${APK_FILE}" \
+              --title "電子紙時鐘 ${TAG}" \
+              --notes "$(printf '%b' "${NOTES}")" \
+              --latest
+          fi

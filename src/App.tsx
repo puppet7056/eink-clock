@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type TouchEvent } from 'react';
 import {
   BatteryCharging,
+  BatteryFull,
+  BatteryLow,
+  BatteryMedium,
+  BatteryWarning,
   BookOpen,
   CalendarDays,
   ChevronLeft,
   ChevronRight,
   Clock,
+  Download,
+  ExternalLink,
   Eye,
   EyeOff,
   KeyRound,
+  LightbulbOff,
   Monitor,
   Moon,
   RefreshCw,
@@ -18,6 +25,8 @@ import {
   Sun,
   SunDim,
   Type,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { CalendarPanel, type CalendarEventItem } from './components/CalendarPanel';
 import { WeatherPanel, type DeviceScale } from './components/WeatherPanel';
@@ -42,6 +51,16 @@ import {
   parseCwaOpenDataJson,
   parseCwaTownHtml,
 } from './utils/cwaParser';
+import {
+  APP_VERSION,
+  APP_VERSION_CODE,
+  checkGithubReleaseUpdate,
+  DEFAULT_GITHUB_REPO,
+  normalizeGithubRepo,
+  type ReleaseUpdateInfo,
+} from './utils/appUpdate';
+import { useDeviceStatus } from './utils/deviceStatus';
+import { parseGoogleICalEvents } from './utils/icalParser';
 import { getTaiwanDayInfo } from './utils/taiwanCalendar';
 
 type OrientationMode = 'auto' | 'portrait' | 'landscape';
@@ -64,24 +83,33 @@ function parseFontScale(raw: string): FontScalePreset {
   return found ? found.value : 100;
 }
 
-// 解析 iCal 日期字串
-function parseICalDate(str: string): Date | null {
-  if (!str) return null;
-  const clean = str.replace(/[^0-9T]/g, '');
-  const y = parseInt(clean.slice(0, 4), 10);
-  const m = parseInt(clean.slice(4, 6), 10) - 1;
-  const d = parseInt(clean.slice(6, 8), 10);
-  if (Number.isNaN(y) || Number.isNaN(m) || Number.isNaN(d)) return null;
+function normalizeIcalUrl(raw: string): string {
+  return raw.trim().replace(/^webcals?:\/\//i, 'https://');
+}
 
-  if (clean.includes('T')) {
-    const hh = parseInt(clean.slice(9, 11), 10);
-    const mm = parseInt(clean.slice(11, 13), 10);
-    if (str.endsWith('Z')) {
-      return new Date(Date.UTC(y, m, d, hh, mm));
+function validateIcalUrl(raw: string): { normalized: string; error: string | null } {
+  const normalized = normalizeIcalUrl(raw);
+  if (!normalized) return { normalized: '', error: '請先貼上 Google 日曆 iCal (.ics) 網址' };
+
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return { normalized, error: '無效的網址協定，請貼上 https:// 開頭的 .ics 網址' };
     }
-    return new Date(y, m, d, hh, mm);
+    if (
+      parsed.hostname.includes('calendar.google.com') &&
+      /\/calendar\/(embed|u\/|r\b)/i.test(parsed.pathname)
+    ) {
+      return {
+        normalized,
+        error:
+          '這是 Google 日曆網頁／嵌入連結，非 iCal 檔案。請至電腦版 Google 日曆「設定和共用 → 整合日曆」複製「iCal 格式的秘密網址」（結尾為 basic.ics）。',
+      };
+    }
+    return { normalized, error: null };
+  } catch {
+    return { normalized, error: '網址格式錯誤，請完整複製 https:// 開頭的 .ics 網址' };
   }
-  return new Date(y, m, d, 0, 0);
 }
 
 function readStorage(key: string, fallback: string): string {
@@ -126,6 +154,83 @@ async function fetchTextWithCorsFallback(targetUrl: string): Promise<string> {
   return await proxied.text();
 }
 
+async function fetchIcalText(rawUrl: string, standalone: boolean): Promise<string> {
+  const { normalized, error } = validateIcalUrl(rawUrl);
+  if (error) throw new Error(error);
+
+  if (!standalone) {
+    let serverResponded = false;
+    try {
+      const res = await fetch(`/api/ical?url=${encodeURIComponent(normalized)}`);
+      serverResponded = true;
+      if (res.ok) {
+        const text = await res.text();
+        if (text.includes('BEGIN:VCALENDAR')) return text;
+        throw new Error(
+          '取得的內容非 .ics 日曆檔，請確認複製的是 Google 日曆「iCal 格式的秘密網址」（結尾為 basic.ics）。'
+        );
+      }
+      const errJson = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(errJson.error || `日曆同步失敗 (HTTP ${res.status})`);
+    } catch (err) {
+      if (serverResponded) {
+        throw err instanceof Error ? err : new Error('日曆同步失敗');
+      }
+      // If /api/ical is unreachable (static build), fall through to standalone CORS fetch
+    }
+  }
+
+  // Standalone APK / static fallback: try direct first, then multiple resilient CORS proxies
+  const candidates = [
+    { label: 'direct', url: normalized },
+    { label: 'corsproxy', url: `https://corsproxy.io/?url=${encodeURIComponent(normalized)}` },
+    { label: 'allorigins', url: `https://api.allorigins.win/raw?url=${encodeURIComponent(normalized)}` },
+    { label: 'codetabs', url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(normalized)}` },
+  ];
+
+  let saw404 = false;
+  let sawHtml = false;
+  let lastStatus = 0;
+
+  for (const candidate of candidates) {
+    try {
+      const res = await fetch(candidate.url, { redirect: 'follow' });
+      if (res.status === 404) {
+        saw404 = true;
+        continue;
+      }
+      if (!res.ok) {
+        lastStatus = res.status;
+        continue;
+      }
+      const text = await res.text();
+      if (text.includes('BEGIN:VCALENDAR')) {
+        return text;
+      }
+      if (/<html|<!doctype html/i.test(text)) {
+        sawHtml = true;
+      }
+    } catch {
+      // try next proxy
+    }
+  }
+
+  if (saw404) {
+    throw new Error(
+      'Google 日曆回傳 404（找不到日曆）：若使用「公開網址」請先勾選公開，或改複製「iCal 格式的秘密網址」（含 private-.../basic.ics）。'
+    );
+  }
+  if (sawHtml) {
+    throw new Error(
+      '取得的內容為網頁而非 .ics 檔，請確認複製的是 Google 日曆「iCal 格式的秘密網址」（結尾為 basic.ics）。'
+    );
+  }
+  if (lastStatus) {
+    throw new Error(`無法取得日曆檔案 (HTTP ${lastStatus})，請檢查網路或網址是否正確。`);
+  }
+  throw new Error('日曆跨網域同步失敗，請確認網路連線正常與 .ics 秘密網址有效。');
+}
+
 export default function App() {
   const [isDark, setIsDark] = useState<boolean>(() => readStorage('eink_theme', 'light') === 'dark');
   const [orientationMode, setOrientationMode] = useState<OrientationMode>(() => {
@@ -154,6 +259,9 @@ export default function App() {
   );
   const [townId, setTownId] = useState<string>(() => readStorage('eink_town_id', '6801000'));
   const [icalUrl, setIcalUrl] = useState<string>(() => readStorage('eink_ical_url', ''));
+  const [githubRepo, setGithubRepo] = useState<string>(
+    () => readStorage('eink_github_repo', '') || DEFAULT_GITHUB_REPO
+  );
 
   const [viewport, setViewport] = useState<{ w: number; h: number }>(() =>
     typeof window !== 'undefined'
@@ -172,10 +280,15 @@ export default function App() {
 
   const [events, setEvents] = useState<CalendarEventItem[]>([]);
   const [syncStatus, setSyncStatus] = useState<string>('每15分同步');
+  const [calendarError, setCalendarError] = useState<string | null>(null);
 
   // 設定彈窗草稿狀態
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [draftIcalUrl, setDraftIcalUrl] = useState<string>('');
+  const [icalTestState, setIcalTestState] = useState<{
+    status: 'idle' | 'loading' | 'success' | 'error';
+    message: string;
+  }>({ status: 'idle', message: '' });
   const [draftTownId, setDraftTownId] = useState<string>(townId);
   const [draftDeviceProfile, setDraftDeviceProfile] = useState<DeviceProfileMode>(deviceProfile);
   const [draftOrientationMode, setDraftOrientationMode] = useState<OrientationMode>(orientationMode);
@@ -183,10 +296,18 @@ export default function App() {
   const [draftCwaApiKey, setDraftCwaApiKey] = useState<string>('');
   const [draftStrictKey, setDraftStrictKey] = useState<boolean>(false);
   const [draftBacklight, setDraftBacklight] = useState<BacklightSettings>(backlight);
+  const [draftGithubRepo, setDraftGithubRepo] = useState<string>(githubRepo);
+  const [updateCheckState, setUpdateCheckState] = useState<{
+    status: 'idle' | 'loading' | 'result' | 'error';
+    info?: ReleaseUpdateInfo;
+    message?: string;
+  }>({ status: 'idle' });
   const [showCwaKey, setShowCwaKey] = useState<boolean>(false);
 
   const ghostTimersRef = useRef<number[]>([]);
   const swipeOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const prevOnlineRef = useRef<boolean>(true);
+  const deviceStatus = useDeviceStatus();
   const townPreset = useMemo(() => findTownPreset(townId), [townId]);
 
   const systemIsLandscape = viewport.w >= viewport.h;
@@ -517,74 +638,38 @@ export default function App() {
     }
   }, [townPreset, cwaApiKey, strictApiKeyOnly]);
 
-  // 抓取並解析 Google 日曆 iCal（僅使用本機設定之私人網址）
+  // 抓取並解析 Google 日曆 iCal（支援重複行程 RRULE、跨日行程與折行格式，僅使用本機設定之私人網址）
   const fetchCalendar = useCallback(async () => {
     const syncCadenceMin = backlightEval.isExtremePowerSave ? 30 : 15;
-    if (!icalUrl) {
+    if (!icalUrl.trim()) {
       setEvents([]);
+      setCalendarError(null);
       setSyncStatus(`每${syncCadenceMin}分同步`);
       return;
     }
 
     const standalone = isStandaloneApkRuntime();
     try {
-      let text = '';
-      if (!standalone) {
-        try {
-          const res = await fetch(`/api/ical?url=${encodeURIComponent(icalUrl)}`);
-          if (res.ok) text = await res.text();
-        } catch {
-          // fallback below
-        }
-      }
-      if (!text) {
-        text = await fetchTextWithCorsFallback(icalUrl);
-      }
-
-      const parsedEvents: CalendarEventItem[] = [];
-      const blocks = text.split('BEGIN:VEVENT');
+      const text = await fetchIcalText(icalUrl, standalone);
       const currentNow = new Date();
+      const parsedEvents = parseGoogleICalEvents(text, currentNow);
       const startOfToday = new Date(
         currentNow.getFullYear(),
         currentNow.getMonth(),
         currentNow.getDate()
       );
-      const rangeEnd = new Date(startOfToday.getTime() + 31 * 24 * 60 * 60 * 1000);
+      const upcomingCount = parsedEvents.filter((ev) => ev.date >= startOfToday).length;
 
-      for (let i = 1; i < blocks.length; i++) {
-        const block = blocks[i];
-        const summaryMatch = block.match(/SUMMARY:(.*)/);
-        const dtStartMatch = block.match(/DTSTART[^:]*:(.*)/);
-        if (summaryMatch && dtStartMatch) {
-          const summary = summaryMatch[1].trim();
-          const rawDate = dtStartMatch[1].trim();
-          const startDate = parseICalDate(rawDate);
-          const isAllDay = !rawDate.includes('T');
-
-          if (startDate && startDate >= startOfToday && startDate <= rangeEnd) {
-            const m = startDate.getMonth() + 1;
-            const d = startDate.getDate();
-            const hh = String(startDate.getHours()).padStart(2, '0');
-            const mm = String(startDate.getMinutes()).padStart(2, '0');
-            const timeLabel = isAllDay ? `${m}/${d} 全天` : `${m}/${d} ${hh}:${mm}`;
-            parsedEvents.push({
-              id: `${startDate.getTime()}-${i}`,
-              date: startDate,
-              timeLabel,
-              summary,
-              isAllDay,
-            });
-          }
-        }
-      }
-
-      parsedEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
       setEvents(parsedEvents);
+      setCalendarError(null);
       setSyncStatus(
-        `已同步 ${String(currentNow.getHours()).padStart(2, '0')}:${String(currentNow.getMinutes()).padStart(2, '0')}`
+        `已同步 ${String(currentNow.getHours()).padStart(2, '0')}:${String(currentNow.getMinutes()).padStart(2, '0')} · ${upcomingCount}筆`
       );
-    } catch {
-      setSyncStatus('日曆同步失敗');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '日曆同步失敗';
+      setEvents([]);
+      setCalendarError(msg);
+      setSyncStatus('日曆同步異常');
     }
   }, [icalUrl, backlightEval.isExtremePowerSave]);
 
@@ -625,8 +710,22 @@ export default function App() {
     return () => window.clearInterval(interval);
   }, [fetchWeatherAndAQI, fetchCalendar, backlightEval.isExtremePowerSave]);
 
+  // 網路從離線恢復連線時自動同步最新氣象與行程
+  useEffect(() => {
+    if (!prevOnlineRef.current && deviceStatus.isOnline) {
+      fetchWeatherAndAQI();
+      fetchCalendar();
+    }
+    prevOnlineRef.current = deviceStatus.isOnline;
+  }, [deviceStatus.isOnline, fetchWeatherAndAQI, fetchCalendar]);
+
   const openSettings = () => {
     setDraftIcalUrl(icalUrl);
+    setIcalTestState(
+      calendarError
+        ? { status: 'error', message: calendarError }
+        : { status: 'idle', message: '' }
+    );
     setDraftTownId(townId);
     setDraftDeviceProfile(deviceProfile);
     setDraftOrientationMode(orientationMode);
@@ -634,8 +733,67 @@ export default function App() {
     setDraftCwaApiKey(cwaApiKey);
     setDraftStrictKey(strictApiKeyOnly);
     setDraftBacklight(backlight);
+    setDraftGithubRepo(githubRepo);
+    setUpdateCheckState({ status: 'idle' });
     setShowCwaKey(false);
     setIsSettingsOpen(true);
+  };
+
+  const handleCheckAppUpdate = async () => {
+    const repoInput = draftGithubRepo.trim() || DEFAULT_GITHUB_REPO;
+    setUpdateCheckState({ status: 'loading', message: '正在連線 GitHub 檢查最新版本...' });
+    try {
+      const info = await checkGithubReleaseUpdate(repoInput);
+      const normalized = normalizeGithubRepo(repoInput);
+      if (normalized) {
+        setDraftGithubRepo(normalized);
+        setGithubRepo(normalized);
+        writeStorage('eink_github_repo', normalized);
+      }
+      setUpdateCheckState({ status: 'result', info });
+    } catch (err) {
+      setUpdateCheckState({
+        status: 'error',
+        message: err instanceof Error ? err.message : '檢查更新失敗',
+      });
+    }
+  };
+
+  const testDraftIcalSync = async () => {
+    const cleaned = normalizeIcalUrl(draftIcalUrl);
+    if (!cleaned) {
+      setIcalTestState({ status: 'error', message: '請先貼上 Google 日曆 iCal (.ics) 秘密網址' });
+      return;
+    }
+    setIcalTestState({ status: 'loading', message: '正在測試連線並解析日曆行程...' });
+    try {
+      const text = await fetchIcalText(cleaned, isStandaloneApkRuntime());
+      const currentNow = new Date();
+      const parsed = parseGoogleICalEvents(text, currentNow);
+      const startOfToday = new Date(
+        currentNow.getFullYear(),
+        currentNow.getMonth(),
+        currentNow.getDate()
+      );
+      const upcomingCount = parsed.filter((ev) => ev.date >= startOfToday).length;
+      if (upcomingCount > 0) {
+        setIcalTestState({
+          status: 'success',
+          message: `同步成功！讀取到 ${upcomingCount} 筆未來行程（含本月共 ${parsed.length} 筆），點下方「儲存並套用」即可顯示。`,
+        });
+      } else {
+        setIcalTestState({
+          status: 'success',
+          message:
+            '連線成功（.ics 格式正確），但未來 60 天內查無行程。請確認行程是否建立在此 Google 日曆（非子日曆或工作表）中。',
+        });
+      }
+    } catch (err) {
+      setIcalTestState({
+        status: 'error',
+        message: err instanceof Error ? err.message : '日曆同步失敗',
+      });
+    }
   };
 
   const stepDraftFontScale = (delta: -1 | 1) => {
@@ -645,8 +803,9 @@ export default function App() {
   };
 
   const saveSettings = () => {
-    const cleanedIcal = draftIcalUrl.trim();
+    const cleanedIcal = normalizeIcalUrl(draftIcalUrl);
     const cleanedCwaKey = draftCwaApiKey.trim();
+    const cleanedRepo = normalizeGithubRepo(draftGithubRepo) || draftGithubRepo.trim();
 
     setIcalUrl(cleanedIcal);
     setTownId(draftTownId);
@@ -656,6 +815,7 @@ export default function App() {
     setCwaApiKey(cleanedCwaKey);
     setStrictApiKeyOnly(draftStrictKey);
     setBacklight(draftBacklight);
+    setGithubRepo(cleanedRepo);
 
     writeStorage('eink_ical_url', cleanedIcal);
     writeStorage('eink_town_id', draftTownId);
@@ -664,8 +824,10 @@ export default function App() {
     writeStorage('eink_font_scale', String(draftFontScale));
     writeStorage('eink_cwa_api_key', cleanedCwaKey);
     writeStorage('eink_strict_api_key', String(draftStrictKey));
+    writeStorage('eink_github_repo', cleanedRepo);
     saveBacklightSettings(draftBacklight);
 
+    setIcalTestState({ status: 'idle', message: '' });
     setIsSettingsOpen(false);
   };
 
@@ -749,6 +911,28 @@ export default function App() {
     handleSelectOrientation(next);
   };
 
+  const isLowBattery = Boolean(
+    deviceStatus.battery && !deviceStatus.battery.charging && deviceStatus.battery.level <= 20
+  );
+
+  const renderBatteryIcon = () => {
+    const b = deviceStatus.battery;
+    if (!b) return null;
+    const iconCls = 'w-[1.15em] h-[1.15em] shrink-0';
+    if (b.charging) return <BatteryCharging className={iconCls} />;
+    if (b.level <= 20) return <BatteryWarning className={iconCls} />;
+    if (b.level <= 45) return <BatteryLow className={iconCls} />;
+    if (b.level <= 80) return <BatteryMedium className={iconCls} />;
+    return <BatteryFull className={iconCls} />;
+  };
+
+  const statusTextClass =
+    effectiveDeviceScale === 'tablet10'
+      ? 'text-[length:calc(14px*var(--fs-ctrl))]'
+      : hideHeaderLabels
+        ? 'text-[length:calc(11.5px*var(--fs-ctrl))]'
+        : 'text-[length:calc(12.5px*var(--fs-ctrl))]';
+
   return (
     <div
       data-font-scale={String(fontScale)}
@@ -804,6 +988,63 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-1 shrink-0 flex-wrap">
+            {/* 裝置狀態指示：網路連線與電池電量（免下拉安卓狀態列即可確認是否需充電） */}
+            <div
+              aria-label="裝置電量與連線狀態"
+              className={`inline-flex items-center border-[1.5px] border-[var(--border-color)] rounded-[6px] overflow-hidden shrink-0 ${statusTextClass} font-extrabold leading-none`}
+            >
+              <span
+                title={deviceStatus.connectionLabel}
+                className={`inline-flex items-center gap-1 ${
+                  effectiveDeviceScale === 'tablet10'
+                    ? 'px-2 py-1.5'
+                    : hideHeaderLabels
+                      ? 'px-1.5 py-1'
+                      : 'px-2 py-1'
+                } ${
+                  deviceStatus.isOnline
+                    ? 'bg-[var(--bg-color)] text-[var(--fg-color)]'
+                    : 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                }`}
+              >
+                {deviceStatus.isOnline ? (
+                  <Wifi className="w-[1.05em] h-[1.05em] shrink-0" aria-label="已連線" />
+                ) : (
+                  <>
+                    <WifiOff className="w-[1.05em] h-[1.05em] shrink-0" aria-label="已離線" />
+                    <span className="whitespace-nowrap">離線</span>
+                  </>
+                )}
+              </span>
+
+              {deviceStatus.battery && (
+                <span
+                  title={
+                    deviceStatus.battery.charging
+                      ? `充電中 ${deviceStatus.battery.level}%`
+                      : isLowBattery
+                        ? `電量偏低 ${deviceStatus.battery.level}%，請充電`
+                        : `電量 ${deviceStatus.battery.level}%`
+                  }
+                  className={`inline-flex items-center gap-1 border-l-[1.5px] border-[var(--border-color)] font-num whitespace-nowrap ${
+                    effectiveDeviceScale === 'tablet10'
+                      ? 'px-2 py-1.5'
+                      : hideHeaderLabels
+                        ? 'px-1.5 py-1'
+                        : 'px-2 py-1'
+                  } ${
+                    isLowBattery
+                      ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                      : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
+                  }`}
+                >
+                  {renderBatteryIcon()}
+                  <span>{deviceStatus.battery.level}%</span>
+                  {isLowBattery && <span>{hideHeaderLabels ? '!' : '請充電'}</span>}
+                </span>
+              )}
+            </div>
+
             {/* 直橫顯示切換：4.3 吋採單顆循環鍵節省頂部空間，其他尺寸顯示三段切換 */}
             {isCompact4 ? (
               <button
@@ -866,7 +1107,7 @@ export default function App() {
               title={backlightEval.detailLabel}
             >
               {backlight.mode === 'off' ? (
-                <BatteryCharging className="w-3.5 h-3.5" />
+                <LightbulbOff className="w-3.5 h-3.5" />
               ) : (
                 <SunDim className="w-3.5 h-3.5" />
               )}
@@ -983,6 +1224,7 @@ export default function App() {
                   events={events}
                   hasIcalUrl={Boolean(icalUrl)}
                   syncStatus={syncStatus}
+                  calendarError={calendarError}
                   isLandscape={isLandscape}
                   deviceScale="compact4"
                   onOpenSettings={openSettings}
@@ -1092,6 +1334,7 @@ export default function App() {
                 events={events}
                 hasIcalUrl={Boolean(icalUrl)}
                 syncStatus={syncStatus}
+                calendarError={calendarError}
                 isLandscape={true}
                 deviceScale={effectiveDeviceScale}
                 onOpenSettings={openSettings}
@@ -1143,6 +1386,7 @@ export default function App() {
                 events={events}
                 hasIcalUrl={Boolean(icalUrl)}
                 syncStatus={syncStatus}
+                calendarError={calendarError}
                 isLandscape={false}
                 deviceScale={effectiveDeviceScale}
                 onOpenSettings={openSettings}
@@ -1463,18 +1707,50 @@ export default function App() {
               </label>
 
               {/* Google 日曆 iCal URL */}
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1.5">
                 <label htmlFor="ical-input" className="text-[13px] font-extrabold">
                   Google 日曆「iCal 格式的秘密網址 (.ics)」：
                 </label>
-                <input
-                  id="ical-input"
-                  type="text"
-                  value={draftIcalUrl}
-                  onChange={(e) => setDraftIcalUrl(e.target.value)}
-                  placeholder="https://calendar.google.com/calendar/ical/..."
-                  className="w-full p-2 text-[13px] border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
-                />
+                <div className="flex gap-1.5">
+                  <input
+                    id="ical-input"
+                    type="text"
+                    value={draftIcalUrl}
+                    onChange={(e) => {
+                      setDraftIcalUrl(e.target.value);
+                      if (icalTestState.status !== 'idle') {
+                        setIcalTestState({ status: 'idle', message: '' });
+                      }
+                    }}
+                    placeholder="https://calendar.google.com/calendar/ical/.../private-.../basic.ics"
+                    className="flex-1 min-w-0 p-2 text-[13px] border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
+                  />
+                  <button
+                    type="button"
+                    onClick={testDraftIcalSync}
+                    disabled={icalTestState.status === 'loading'}
+                    className={`${btnClass} disabled:opacity-50`}
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 ${icalTestState.status === 'loading' ? 'animate-spin' : ''}`}
+                    />
+                    測試同步
+                  </button>
+                </div>
+                {icalTestState.status !== 'idle' && (
+                  <p
+                    className={`text-[12px] leading-[1.45] px-2.5 py-1.5 rounded-[6px] border ${
+                      icalTestState.status === 'error'
+                        ? 'font-extrabold border-[var(--border-color)] bg-[var(--surface-subtle)]'
+                        : 'font-bold border-[var(--border-subtle)] bg-[var(--surface-subtle)]'
+                    }`}
+                  >
+                    {icalTestState.message}
+                  </p>
+                )}
+                <p className="text-[11px] text-[var(--fg-muted)] leading-[1.45]">
+                  取得方式：電腦版 Google 日曆 → 左側日曆「設定和共用」→「整合日曆」→ 複製「iCal 格式的秘密網址」（結尾須為 basic.ics，非網頁嵌入連結）。支援每週／每月／每年重複行程與跨日行程。
+                </p>
               </div>
             </div>
 
@@ -1533,7 +1809,132 @@ export default function App() {
               </div>
             </div>
 
-            {/* 區塊四：電子紙專用簡易使用說明 */}
+            {/* 區塊四：版本資訊與線上檢查更新（GitHub Releases 直接下載 APK） */}
+            <div className="flex flex-col gap-2.5 border-b border-[var(--border-subtle)] pb-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-[15px] font-black flex items-center gap-1.5">
+                  <Download className="w-4 h-4 shrink-0" />
+                  版本資訊與檢查更新
+                </h3>
+                <span className="text-[12px] font-extrabold font-num text-[var(--fg-muted)]">
+                  目前版本：v{APP_VERSION}（Build {APP_VERSION_CODE}）
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label htmlFor="github-repo-input" className="text-[12px] font-extrabold">
+                  GitHub 儲存庫來源（帳號/專案名稱，APK 建置時會自動帶入）：
+                </label>
+                <div className="flex gap-1.5">
+                  <input
+                    id="github-repo-input"
+                    type="text"
+                    value={draftGithubRepo}
+                    onChange={(e) => {
+                      setDraftGithubRepo(e.target.value);
+                      if (updateCheckState.status !== 'idle') {
+                        setUpdateCheckState({ status: 'idle' });
+                      }
+                    }}
+                    placeholder="例如：username/eink-clock"
+                    className="flex-1 min-w-0 p-2 text-[13px] font-mono-num border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleCheckAppUpdate}
+                    disabled={updateCheckState.status === 'loading'}
+                    className={`${btnClass} disabled:opacity-50`}
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 ${updateCheckState.status === 'loading' ? 'animate-spin' : ''}`}
+                    />
+                    檢查更新
+                  </button>
+                </div>
+              </div>
+
+              {updateCheckState.status === 'loading' && (
+                <p className="text-[12px] font-bold px-2.5 py-2 rounded-[6px] border border-[var(--border-subtle)] bg-[var(--surface-subtle)]">
+                  {updateCheckState.message}
+                </p>
+              )}
+
+              {updateCheckState.status === 'error' && (
+                <p className="text-[12px] font-extrabold leading-[1.45] px-2.5 py-2 rounded-[6px] border border-[var(--border-color)] bg-[var(--surface-subtle)]">
+                  {updateCheckState.message}
+                </p>
+              )}
+
+              {updateCheckState.status === 'result' && updateCheckState.info && (
+                <div className="flex flex-col gap-2 px-3 py-2.5 rounded-[8px] border-[1.5px] border-[var(--border-color)] bg-[var(--surface-subtle)]">
+                  {updateCheckState.info.hasUpdate ? (
+                    <>
+                      <div className="flex flex-wrap items-baseline justify-between gap-2">
+                        <span className="text-[13.5px] font-black font-num">
+                          發現新版本：v{updateCheckState.info.latestVersion}
+                        </span>
+                        {updateCheckState.info.publishedAtLabel && (
+                          <span className="text-[11.5px] font-bold font-num text-[var(--fg-muted)]">
+                            發布於 {updateCheckState.info.publishedAtLabel}
+                          </span>
+                        )}
+                      </div>
+                      {updateCheckState.info.releaseNotes && (
+                        <p className="text-[12px] font-semibold leading-[1.45] whitespace-pre-line">
+                          {updateCheckState.info.releaseNotes}
+                        </p>
+                      )}
+                      <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                        <a
+                          href={
+                            updateCheckState.info.apkDownloadUrl ||
+                            updateCheckState.info.releasePageUrl
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-black border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--surface-active)] text-[var(--fg-inverse)] no-underline"
+                        >
+                          <Download className="w-3.5 h-3.5 shrink-0" />
+                          {updateCheckState.info.apkDownloadUrl
+                            ? '下載新版 APK 並安裝'
+                            : '前往下載新版 APK'}
+                        </a>
+                        <a
+                          href={updateCheckState.info.releasePageUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[12px] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] no-underline"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                          GitHub 發行頁
+                        </a>
+                      </div>
+                      <p className="text-[11px] font-semibold text-[var(--fg-muted)] leading-[1.4]">
+                        點擊後會由系統瀏覽器下載 APK；下載完成點擊安裝即可直接覆蓋升級，原有 API Key、日曆與字體設定皆會保留。
+                      </p>
+                    </>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[13px] font-extrabold font-num">
+                        目前已是最新版本（v{updateCheckState.info.currentVersion}，線上最新 v
+                        {updateCheckState.info.latestVersion}）
+                      </span>
+                      <a
+                        href={updateCheckState.info.releasePageUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[12px] font-bold underline underline-offset-2 text-[var(--fg-color)]"
+                      >
+                        <ExternalLink className="w-3 h-3 shrink-0" />
+                        查看發行頁
+                      </a>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* 區塊五：電子紙專用簡易使用說明 */}
             <div className="flex flex-col gap-2 bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[8px] p-3.5">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-[14px] font-black flex items-center gap-1.5">

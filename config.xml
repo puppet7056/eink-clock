@@ -5,7 +5,9 @@
     <author email="dev@example.com" href="https://github.com">E-Ink Dashboard</author>
     <content src="index.html" />
     <access origin="*" />
-    <allow-navigation href="*" />
+    <allow-navigation href="https://localhost/*" />
+    <allow-navigation href="http://localhost/*" />
+    <allow-navigation href="file://*" />
     <allow-intent href="http://*/*" />
     <allow-intent href="https://*/*" />
 
