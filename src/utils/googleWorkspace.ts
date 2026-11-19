@@ -50,6 +50,25 @@ interface EInkOAuthCordovaBridge {
     onSuccess: (url: string) => void,
     onError?: (err: unknown) => void
   ) => void;
+  saveRefreshToken?: (
+    refreshToken: string,
+    accountEmail: string,
+    onSuccess?: () => void,
+    onError?: (err: unknown) => void
+  ) => void;
+  saveAccountEmail?: (
+    accountEmail: string,
+    onSuccess?: () => void,
+    onError?: (err: unknown) => void
+  ) => void;
+  loadRefreshToken?: (
+    onSuccess: (payload: { refreshToken?: string; accountEmail?: string }) => void,
+    onError?: (err: unknown) => void
+  ) => void;
+  clearRefreshToken?: (
+    onSuccess?: () => void,
+    onError?: (err: unknown) => void
+  ) => void;
 }
 
 declare global {
@@ -319,6 +338,7 @@ async function exchangeAndroidAuthCode(callbackUrl: string): Promise<{
   cachedAccessToken = data.access_token;
   if (data.refresh_token) {
     cachedRefreshToken = data.refresh_token;
+    saveNativeRefreshToken(data.refresh_token, 'Google 帳號（已授權）');
   }
   const expiresInSec = typeof data.expires_in === 'number' ? data.expires_in : 3600;
   cachedTokenExpiresAt = Date.now() + Math.max(60, expiresInSec - 120) * 1000;
@@ -333,18 +353,77 @@ async function exchangeAndroidAuthCode(callbackUrl: string): Promise<{
   };
 }
 
+function saveNativeRefreshToken(refreshToken: string, accountEmail: string): void {
+  if (!refreshToken) return;
+  try {
+    if (window.EInkOAuth && typeof window.EInkOAuth.saveRefreshToken === 'function') {
+      window.EInkOAuth.saveRefreshToken(refreshToken, accountEmail);
+    }
+  } catch {
+    // ignore native storage failure
+  }
+}
+
+export function updateNativeGoogleAccountEmail(accountEmail: string): void {
+  if (!accountEmail) return;
+  try {
+    if (window.EInkOAuth && typeof window.EInkOAuth.saveAccountEmail === 'function') {
+      window.EInkOAuth.saveAccountEmail(accountEmail);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function clearNativeRefreshToken(): void {
+  try {
+    if (window.EInkOAuth && typeof window.EInkOAuth.clearRefreshToken === 'function') {
+      window.EInkOAuth.clearRefreshToken();
+    }
+  } catch {
+    // ignore
+  }
+}
+
+async function loadNativeRefreshToken(): Promise<{
+  refreshToken: string;
+  accountEmail: string;
+}> {
+  if (!window.EInkOAuth || typeof window.EInkOAuth.loadRefreshToken !== 'function') {
+    return { refreshToken: '', accountEmail: '' };
+  }
+  return new Promise((resolve) => {
+    try {
+      window.EInkOAuth!.loadRefreshToken!(
+        (payload) => {
+          resolve({
+            refreshToken: typeof payload?.refreshToken === 'string' ? payload.refreshToken.trim() : '',
+            accountEmail: typeof payload?.accountEmail === 'string' ? payload.accountEmail.trim() : '',
+          });
+        },
+        () => resolve({ refreshToken: '', accountEmail: '' })
+      );
+    } catch {
+      resolve({ refreshToken: '', accountEmail: '' });
+    }
+  });
+}
+
 export function initAndroidNativeOAuthListener(
   onAuthSuccess: (account: GoogleAccountProfile, token: string) => void,
   onAuthError: (message: string) => void
 ): () => void {
   let active = true;
   let listenerBound = false;
+  let restoreInFlight = false;
+  let sessionRestored = false;
 
   const handleCallbackUrl = async (url: string) => {
     if (!active || !url) return;
     try {
       const result = await exchangeAndroidAuthCode(url);
       if (active) {
+        sessionRestored = true;
         onAuthSuccess(result.account, result.accessToken);
       }
     } catch (err) {
@@ -354,30 +433,72 @@ export function initAndroidNativeOAuthListener(
     }
   };
 
-  const bindBridge = () => {
-    if (!active || listenerBound) return;
-    if (!window.EInkOAuth || typeof window.EInkOAuth.listen !== 'function') return;
-    listenerBound = true;
-    window.EInkOAuth.listen(
-      (url) => {
-        void handleCallbackUrl(url);
-      },
-      (err) => {
-        if (active && err) {
-          onAuthError(typeof err === 'string' ? err : '監聽 Google 登入回呼失敗');
-        }
+  const tryRestoreSavedSession = async () => {
+    if (!active || restoreInFlight || sessionRestored || cachedAccessToken) return;
+    restoreInFlight = true;
+    try {
+      const stored = await loadNativeRefreshToken();
+      if (!active || !stored.refreshToken) return;
+
+      cachedRefreshToken = stored.refreshToken;
+      const freshAccessToken = await refreshAndroidGoogleTokenIfNeeded(true);
+      if (active && freshAccessToken) {
+        sessionRestored = true;
+        onAuthSuccess(
+          {
+            email: stored.accountEmail || 'Google 帳號（已授權）',
+            displayName: null,
+            authMode: 'android-native',
+          },
+          freshAccessToken
+        );
       }
-    );
+    } catch (err) {
+      if (err instanceof GoogleAuthExpiredError) {
+        // Refresh token was revoked by Google; clear stored token silently so user can re-sign in
+        clearNativeRefreshToken();
+      }
+      // If offline / transient network failure, keep stored refresh token and retry when online
+    } finally {
+      restoreInFlight = false;
+    }
+  };
+
+  const bindBridge = () => {
+    if (!active) return;
+    if (!window.EInkOAuth || typeof window.EInkOAuth.listen !== 'function') return;
+    if (!listenerBound) {
+      listenerBound = true;
+      window.EInkOAuth.listen(
+        (url) => {
+          void handleCallbackUrl(url);
+        },
+        (err) => {
+          if (active && err) {
+            onAuthError(typeof err === 'string' ? err : '監聽 Google 登入回呼失敗');
+          }
+        }
+      );
+    }
+    void tryRestoreSavedSession();
+  };
+
+  const handleOnline = () => {
+    if (active && !cachedAccessToken) {
+      void tryRestoreSavedSession();
+    }
   };
 
   bindBridge();
   document.addEventListener('deviceready', bindBridge, false);
   window.addEventListener('eink-cordova-ready', bindBridge);
+  window.addEventListener('online', handleOnline);
 
   return () => {
     active = false;
     document.removeEventListener('deviceready', bindBridge, false);
     window.removeEventListener('eink-cordova-ready', bindBridge);
+    window.removeEventListener('online', handleOnline);
   };
 }
 
@@ -403,14 +524,21 @@ export async function refreshAndroidGoogleTokenIfNeeded(force = false): Promise<
   });
 
   if (!res.ok) {
-    cachedAccessToken = null;
-    cachedRefreshToken = null;
-    cachedTokenExpiresAt = 0;
-    throw new GoogleAuthExpiredError();
+    // Only wipe stored refresh token on explicit OAuth revocation (HTTP 400/401),
+    // not on temporary server/network blips
+    if (res.status === 400 || res.status === 401) {
+      cachedAccessToken = null;
+      cachedRefreshToken = null;
+      cachedTokenExpiresAt = 0;
+      clearNativeRefreshToken();
+      throw new GoogleAuthExpiredError();
+    }
+    throw new Error(`Google 憑證續期暫時失敗 (HTTP ${res.status})`);
   }
 
   const data = (await res.json().catch(() => ({}))) as {
     access_token?: string;
+    refresh_token?: string;
     expires_in?: number;
   };
 
@@ -420,6 +548,10 @@ export async function refreshAndroidGoogleTokenIfNeeded(force = false): Promise<
   }
 
   cachedAccessToken = data.access_token;
+  if (data.refresh_token) {
+    cachedRefreshToken = data.refresh_token;
+    saveNativeRefreshToken(data.refresh_token, '');
+  }
   const expiresInSec = typeof data.expires_in === 'number' ? data.expires_in : 3600;
   cachedTokenExpiresAt = Date.now() + Math.max(60, expiresInSec - 120) * 1000;
   return cachedAccessToken;
@@ -533,6 +665,7 @@ export function clearGoogleAccessToken(): void {
   cachedAccessToken = null;
   cachedRefreshToken = null;
   cachedTokenExpiresAt = 0;
+  clearNativeRefreshToken();
 }
 
 export async function googleLogout(): Promise<void> {
@@ -540,6 +673,7 @@ export async function googleLogout(): Promise<void> {
   cachedAccessToken = null;
   cachedRefreshToken = null;
   cachedTokenExpiresAt = 0;
+  clearNativeRefreshToken();
 
   if (tokenToRevoke) {
     fetch(

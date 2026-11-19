@@ -75,6 +75,7 @@ import {
   isAndroidNativeOAuthConfigured,
   refreshAndroidGoogleTokenIfNeeded,
   startAndroidNativeGoogleSignIn,
+  updateNativeGoogleAccountEmail,
   type GoogleAccountProfile,
   type GoogleTaskItem,
 } from './utils/googleWorkspace';
@@ -821,6 +822,9 @@ export default function App() {
 
         const { events: googleEvents, calendarEmail } = calendarResult;
         if (calendarEmail) {
+          if (googleUser?.authMode === 'android-native') {
+            updateNativeGoogleAccountEmail(calendarEmail);
+          }
           setGoogleUser((prev) =>
             prev && prev.email !== calendarEmail ? { ...prev, email: calendarEmail } : prev
           );
