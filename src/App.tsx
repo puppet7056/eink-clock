@@ -1398,21 +1398,28 @@ export default function App() {
 
       {/* 設定視窗（字體大小 + 背光與省電 + 私人 API 金鑰本機儲存 + 閱讀器尺寸與地區） */}
       {isSettingsOpen && (
-        <div className="fixed inset-0 bg-[var(--bg-color)] text-[var(--fg-color)] z-[100] p-4 sm:p-6 flex flex-col items-center overflow-y-auto">
-          <div className="w-full max-w-[640px] my-auto flex flex-col gap-4 border-2 border-[var(--border-color)] rounded-[10px] p-5">
-            <div className="flex items-center justify-between border-b-2 border-[var(--border-color)] pb-2.5">
-              <h2 className="text-[length:calc(20px*var(--fs-ctrl))] font-black">看板設定</h2>
-              <button type="button" onClick={fetchWeatherAndAQI} className={btnClass}>
-                <RefreshCw className="w-3.5 h-3.5" />
+        <div
+          data-font-scale={String(draftFontScale)}
+          className="fixed inset-0 bg-[var(--bg-color)] text-[var(--fg-color)] z-[100] p-4 sm:p-6 flex flex-col items-center overflow-y-auto"
+        >
+          <div className="w-full max-w-[740px] my-auto flex flex-col gap-4 border-2 border-[var(--border-color)] rounded-[10px] p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b-2 border-[var(--border-color)] pb-2.5">
+              <h2 className="text-[length:calc(20px*var(--fs))] font-black">看板設定</h2>
+              <button
+                type="button"
+                onClick={fetchWeatherAndAQI}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[length:calc(13px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <RefreshCw className="w-[1em] h-[1em] shrink-0" />
                 立即更新氣象
               </button>
             </div>
 
-            {/* 區塊零：字體大小調整（10.3 吋等大螢幕電子紙推薦放大） */}
+            {/* 區塊零：字體大小調整（10.3 吋等大螢幕電子紙推薦放大，設定頁同步即時縮放） */}
             <div className="flex flex-col gap-2.5 border-b border-[var(--border-subtle)] pb-4">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-[length:calc(15px*var(--fs-ctrl))] font-black flex items-center gap-1.5">
-                  <Type className="w-4 h-4 shrink-0" />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-[length:calc(15.5px*var(--fs))] font-black flex items-center gap-1.5">
+                  <Type className="w-[1.05em] h-[1.05em] shrink-0" />
                   字體大小調整（10.3 吋大螢幕必調）
                 </h3>
                 <div className="flex items-center gap-1.5">
@@ -1421,11 +1428,11 @@ export default function App() {
                     onClick={() => stepDraftFontScale(-1)}
                     disabled={draftFontScale === FONT_SCALE_OPTIONS[0].value}
                     aria-label="縮小字體"
-                    className="px-2.5 py-1 text-[length:calc(13px*var(--fs-ctrl))] font-black border-[1.5px] border-[var(--border-color)] rounded-[6px] cursor-pointer disabled:opacity-35"
+                    className="px-2.5 py-1 text-[length:calc(13.5px*var(--fs))] font-black border-[1.5px] border-[var(--border-color)] rounded-[6px] cursor-pointer disabled:opacity-35"
                   >
                     A-
                   </button>
-                  <span className="min-w-[52px] text-center text-[length:calc(14px*var(--fs-ctrl))] font-black font-num">
+                  <span className="min-w-[3.6em] text-center text-[length:calc(14.5px*var(--fs))] font-black font-num">
                     {draftFontScale}%
                   </span>
                   <button
@@ -1435,7 +1442,7 @@ export default function App() {
                       draftFontScale === FONT_SCALE_OPTIONS[FONT_SCALE_OPTIONS.length - 1].value
                     }
                     aria-label="放大字體"
-                    className="px-2.5 py-1 text-[length:calc(13px*var(--fs-ctrl))] font-black border-[1.5px] border-[var(--border-color)] rounded-[6px] cursor-pointer disabled:opacity-35"
+                    className="px-2.5 py-1 text-[length:calc(13.5px*var(--fs))] font-black border-[1.5px] border-[var(--border-color)] rounded-[6px] cursor-pointer disabled:opacity-35"
                   >
                     A+
                   </button>
@@ -1461,10 +1468,10 @@ export default function App() {
                           : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
                       }`}
                     >
-                      <span className="text-[length:calc(13px*var(--fs-ctrl))] font-black">
+                      <span className="text-[length:calc(13.5px*var(--fs))] font-black">
                         {opt.label}
                       </span>
-                      <span className="text-[length:calc(11px*var(--fs-ctrl))] font-bold font-num opacity-80">
+                      <span className="text-[length:calc(11.5px*var(--fs))] font-bold font-num opacity-80">
                         {opt.short}
                       </span>
                     </button>
@@ -1473,10 +1480,7 @@ export default function App() {
               </div>
 
               {/* 即時字體大小預覽 */}
-              <div
-                data-font-scale={String(draftFontScale)}
-                className="flex flex-wrap items-baseline justify-between gap-2 bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[8px] px-3.5 py-2.5"
-              >
+              <div className="flex flex-wrap items-baseline justify-between gap-2 bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[8px] px-3.5 py-2.5">
                 <span className="text-[length:calc(28px*var(--fs))] font-black font-num leading-none">
                   {timeDisplay}
                 </span>
@@ -1489,19 +1493,19 @@ export default function App() {
                 </span>
               </div>
 
-              <p className="text-[length:calc(12px*var(--fs-ctrl))] font-semibold text-[var(--fg-muted)] leading-[1.45]">
-                10.3 吋高解析電子紙閱讀器（如 BOOX 10.3）建議選擇「大字 130%」或「特大 150%」，遠距桌面擺放可調至「超大 170%」。
+              <p className="text-[length:calc(12.5px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.5]">
+                10.3 吋高解析電子紙閱讀器（如 BOOX 10.3）建議選擇「大字 130%」或「特大 150%」，遠距桌面擺放可調至「超大 170%」。調整時設定頁與說明文字會立即同步放大。
               </p>
             </div>
 
             {/* 區塊一：背光與極致省電設定 */}
             <div className="flex flex-col gap-2.5 border-b border-[var(--border-subtle)] pb-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-[15px] font-black flex items-center gap-1.5">
-                  <SunDim className="w-4 h-4" />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-[length:calc(15.5px*var(--fs))] font-black flex items-center gap-1.5">
+                  <SunDim className="w-[1.05em] h-[1.05em] shrink-0" />
                   背光與省電模式（具前光之電子紙適用）
                 </h3>
-                <span className="text-[12px] font-bold font-num text-[var(--fg-muted)]">
+                <span className="text-[length:calc(13px*var(--fs))] font-bold font-num text-[var(--fg-muted)]">
                   {draftBacklightPreview.shortLabel}
                 </span>
               </div>
@@ -1527,7 +1531,7 @@ export default function App() {
                       onClick={() =>
                         setDraftBacklight((prev) => ({ ...prev, mode: opt.id }))
                       }
-                      className={`py-2 px-2 text-[12px] font-extrabold cursor-pointer whitespace-nowrap ${
+                      className={`py-2 px-2 text-[length:calc(12.5px*var(--fs))] font-extrabold cursor-pointer ${
                         active
                           ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
                           : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
@@ -1539,14 +1543,14 @@ export default function App() {
                 })}
               </div>
 
-              <p className="text-[12px] font-semibold text-[var(--fg-muted)] leading-[1.45]">
+              <p className="text-[length:calc(12.5px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.5]">
                 {draftBacklightPreview.detailLabel}
               </p>
 
               {/* 夜晚部分背光細部調整 */}
               {draftBacklight.mode === 'night' && (
                 <div className="flex flex-col gap-2.5 bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[8px] p-3">
-                  <div className="flex items-center justify-between text-[13px] font-bold">
+                  <div className="flex items-center justify-between text-[length:calc(13.5px*var(--fs))] font-bold">
                     <label htmlFor="night-level-slider">夜晚背光強度</label>
                     <span className="font-num font-black">{draftBacklight.nightLevel}%</span>
                   </div>
@@ -1566,7 +1570,7 @@ export default function App() {
                     className="w-full accent-[var(--fg-color)] cursor-pointer"
                   />
 
-                  <label className="flex items-center gap-2 text-[12px] font-bold cursor-pointer">
+                  <label className="flex items-start gap-2 text-[length:calc(12.5px*var(--fs))] font-bold cursor-pointer leading-[1.45]">
                     <input
                       type="checkbox"
                       checked={draftBacklight.followSunTimes}
@@ -1576,7 +1580,7 @@ export default function App() {
                           followSunTimes: e.target.checked,
                         }))
                       }
-                      className="w-4 h-4 accent-[var(--fg-color)]"
+                      className="w-[1.1em] h-[1.1em] mt-0.5 shrink-0 accent-[var(--fg-color)]"
                     />
                     <span>
                       自動依中央氣象署日落／日出時間切換（
@@ -1587,7 +1591,7 @@ export default function App() {
                     </span>
                   </label>
 
-                  <div className="flex items-center gap-2 text-[12px] font-bold">
+                  <div className="flex flex-wrap items-center gap-2 text-[length:calc(12.5px*var(--fs))] font-bold">
                     <span>備用夜間時段：</span>
                     <select
                       aria-label="夜間開始小時"
@@ -1598,7 +1602,7 @@ export default function App() {
                           nightStartHour: Number(e.target.value),
                         }))
                       }
-                      className="px-2 py-1 border border-[var(--border-color)] rounded bg-[var(--bg-color)] text-[var(--fg-color)] font-num"
+                      className="px-2 py-1 text-[length:calc(12.5px*var(--fs))] border border-[var(--border-color)] rounded bg-[var(--bg-color)] text-[var(--fg-color)] font-num"
                     >
                       {Array.from({ length: 24 }, (_, h) => (
                         <option key={h} value={h}>
@@ -1616,7 +1620,7 @@ export default function App() {
                           nightEndHour: Number(e.target.value),
                         }))
                       }
-                      className="px-2 py-1 border border-[var(--border-color)] rounded bg-[var(--bg-color)] text-[var(--fg-color)] font-num"
+                      className="px-2 py-1 text-[length:calc(12.5px*var(--fs))] border border-[var(--border-color)] rounded bg-[var(--bg-color)] text-[var(--fg-color)] font-num"
                     >
                       {Array.from({ length: 24 }, (_, h) => (
                         <option key={h} value={h}>
@@ -1631,7 +1635,7 @@ export default function App() {
               {/* 手動固定亮度滑桿 */}
               {draftBacklight.mode === 'manual' && (
                 <div className="flex flex-col gap-2 bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[8px] p-3">
-                  <div className="flex items-center justify-between text-[13px] font-bold">
+                  <div className="flex items-center justify-between text-[length:calc(13.5px*var(--fs))] font-bold">
                     <label htmlFor="manual-level-slider">固定前光亮度</label>
                     <span className="font-num font-black">{draftBacklight.manualLevel}%</span>
                   </div>
@@ -1656,19 +1660,19 @@ export default function App() {
 
             {/* 區塊二：個人 API 金鑰與私密網址（僅存於本機，絕不打包進程式碼或 APK） */}
             <div className="flex flex-col gap-3 border-b border-[var(--border-subtle)] pb-4">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-[15px] font-black flex items-center gap-1.5">
-                  <KeyRound className="w-4 h-4" />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-[length:calc(15.5px*var(--fs))] font-black flex items-center gap-1.5">
+                  <KeyRound className="w-[1.05em] h-[1.05em] shrink-0" />
                   API 金鑰與個人資料來源
                 </h3>
-                <span className="text-[11px] font-bold text-[var(--fg-muted)]">
+                <span className="text-[length:calc(12px*var(--fs))] font-bold text-[var(--fg-muted)]">
                   僅存本機 · 不打包進 APK
                 </span>
               </div>
 
               {/* 中央氣象署 OpenData API Key（單一金鑰整合天氣預報與空氣品質） */}
-              <div className="flex flex-col gap-1">
-                <label htmlFor="cwa-key-input" className="text-[13px] font-extrabold">
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="cwa-key-input" className="text-[length:calc(13.5px*var(--fs))] font-extrabold">
                   台灣中央氣象署 API Key（單一授權碼，整合天氣與空品）：
                 </label>
                 <div className="flex gap-1.5">
@@ -1679,39 +1683,43 @@ export default function App() {
                     onChange={(e) => setDraftCwaApiKey(e.target.value)}
                     placeholder="CWA-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
                     autoComplete="off"
-                    className="flex-1 p-2 text-[13px] font-mono-num border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
+                    className="flex-1 min-w-0 p-2 text-[length:calc(13.5px*var(--fs))] font-mono-num border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
                   />
                   <button
                     type="button"
                     onClick={() => setShowCwaKey((v) => !v)}
                     aria-label={showCwaKey ? '隱藏金鑰' : '顯示金鑰'}
-                    className={btnClass}
+                    className="inline-flex items-center justify-center px-3 py-1.5 text-[length:calc(13px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer shrink-0"
                   >
-                    {showCwaKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    {showCwaKey ? (
+                      <EyeOff className="w-[1.15em] h-[1.15em]" />
+                    ) : (
+                      <Eye className="w-[1.15em] h-[1.15em]" />
+                    )}
                   </button>
                 </div>
-                <p className="text-[11px] text-[var(--fg-muted)] leading-[1.4]">
+                <p className="text-[length:calc(12px*var(--fs))] text-[var(--fg-muted)] leading-[1.5]">
                   前往 opendata.cwa.gov.tw 免費註冊取得授權碼；只需填寫此一組金鑰，即可串接官方鄉鎮預報與開放鏈結空氣品質資料。
                 </p>
               </div>
 
               {/* 嚴格個人金鑰模式 */}
-              <label className="flex items-center gap-2 text-[12px] font-bold cursor-pointer">
+              <label className="flex items-start gap-2 text-[length:calc(12.5px*var(--fs))] font-bold cursor-pointer leading-[1.45]">
                 <input
                   type="checkbox"
                   checked={draftStrictKey}
                   onChange={(e) => setDraftStrictKey(e.target.checked)}
-                  className="w-4 h-4 accent-[var(--fg-color)]"
+                  className="w-[1.1em] h-[1.1em] mt-0.5 shrink-0 accent-[var(--fg-color)]"
                 />
                 <span>嚴格 API Key 模式（未輸入個人金鑰時不自動改用免金鑰公開資料）</span>
               </label>
 
               {/* Google 日曆 iCal URL */}
               <div className="flex flex-col gap-1.5">
-                <label htmlFor="ical-input" className="text-[13px] font-extrabold">
+                <label htmlFor="ical-input" className="text-[length:calc(13.5px*var(--fs))] font-extrabold">
                   Google 日曆「iCal 格式的秘密網址 (.ics)」：
                 </label>
-                <div className="flex gap-1.5">
+                <div className="flex flex-wrap sm:flex-nowrap gap-1.5">
                   <input
                     id="ical-input"
                     type="text"
@@ -1723,23 +1731,23 @@ export default function App() {
                       }
                     }}
                     placeholder="https://calendar.google.com/calendar/ical/.../private-.../basic.ics"
-                    className="flex-1 min-w-0 p-2 text-[13px] border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
+                    className="flex-1 min-w-0 p-2 text-[length:calc(13.5px*var(--fs))] border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
                   />
                   <button
                     type="button"
                     onClick={testDraftIcalSync}
                     disabled={icalTestState.status === 'loading'}
-                    className={`${btnClass} disabled:opacity-50`}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-[length:calc(13px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
                   >
                     <RefreshCw
-                      className={`w-3.5 h-3.5 ${icalTestState.status === 'loading' ? 'animate-spin' : ''}`}
+                      className={`w-[1em] h-[1em] shrink-0 ${icalTestState.status === 'loading' ? 'animate-spin' : ''}`}
                     />
                     測試同步
                   </button>
                 </div>
                 {icalTestState.status !== 'idle' && (
                   <p
-                    className={`text-[12px] leading-[1.45] px-2.5 py-1.5 rounded-[6px] border ${
+                    className={`text-[length:calc(12.5px*var(--fs))] leading-[1.5] px-2.5 py-2 rounded-[6px] border ${
                       icalTestState.status === 'error'
                         ? 'font-extrabold border-[var(--border-color)] bg-[var(--surface-subtle)]'
                         : 'font-bold border-[var(--border-subtle)] bg-[var(--surface-subtle)]'
@@ -1748,7 +1756,7 @@ export default function App() {
                     {icalTestState.message}
                   </p>
                 )}
-                <p className="text-[11px] text-[var(--fg-muted)] leading-[1.45]">
+                <p className="text-[length:calc(12px*var(--fs))] text-[var(--fg-muted)] leading-[1.5]">
                   取得方式：電腦版 Google 日曆 → 左側日曆「設定和共用」→「整合日曆」→ 複製「iCal 格式的秘密網址」（結尾須為 basic.ics，非網頁嵌入連結）。支援每週／每月／每年重複行程與跨日行程。
                 </p>
               </div>
@@ -1756,15 +1764,15 @@ export default function App() {
 
             {/* 區塊三：閱讀器尺寸、顯示方向與天氣地區 */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 border-b border-[var(--border-subtle)] pb-4">
-              <div className="flex flex-col gap-1">
-                <label htmlFor="device-profile-select" className="text-[13px] font-extrabold">
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="device-profile-select" className="text-[length:calc(13.5px*var(--fs))] font-extrabold">
                   閱讀器尺寸適配：
                 </label>
                 <select
                   id="device-profile-select"
                   value={draftDeviceProfile}
                   onChange={(e) => setDraftDeviceProfile(e.target.value as DeviceProfileMode)}
-                  className="w-full p-2 text-[13px] font-bold border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
+                  className="w-full p-2 text-[length:calc(13.5px*var(--fs))] font-bold border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
                 >
                   <option value="auto">自動偵測（推薦）</option>
                   <option value="compact4">4.3 吋（閱星瞳 XTEINK X4・雙頁）</option>
@@ -1774,15 +1782,15 @@ export default function App() {
                 </select>
               </div>
 
-              <div className="flex flex-col gap-1">
-                <label htmlFor="orientation-select" className="text-[13px] font-extrabold">
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="orientation-select" className="text-[length:calc(13.5px*var(--fs))] font-extrabold">
                   直橫顯示方向：
                 </label>
                 <select
                   id="orientation-select"
                   value={draftOrientationMode}
                   onChange={(e) => setDraftOrientationMode(e.target.value as OrientationMode)}
-                  className="w-full p-2 text-[13px] font-bold border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
+                  className="w-full p-2 text-[length:calc(13.5px*var(--fs))] font-bold border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
                 >
                   <option value="auto">自動偵測</option>
                   <option value="portrait">直向顯示</option>
@@ -1790,15 +1798,15 @@ export default function App() {
                 </select>
               </div>
 
-              <div className="flex flex-col gap-1">
-                <label htmlFor="town-select" className="text-[13px] font-extrabold">
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="town-select" className="text-[length:calc(13.5px*var(--fs))] font-extrabold">
                   天氣地區（中央氣象署）：
                 </label>
                 <select
                   id="town-select"
                   value={draftTownId}
                   onChange={(e) => setDraftTownId(e.target.value)}
-                  className="w-full p-2 text-[13px] font-bold border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
+                  className="w-full p-2 text-[length:calc(13.5px*var(--fs))] font-bold border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
                 >
                   {TAIWAN_TOWN_PRESETS.map((town) => (
                     <option key={town.id} value={town.id}>
@@ -1812,20 +1820,20 @@ export default function App() {
             {/* 區塊四：版本資訊與線上檢查更新（GitHub Releases 直接下載 APK） */}
             <div className="flex flex-col gap-2.5 border-b border-[var(--border-subtle)] pb-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-[15px] font-black flex items-center gap-1.5">
-                  <Download className="w-4 h-4 shrink-0" />
+                <h3 className="text-[length:calc(15.5px*var(--fs))] font-black flex items-center gap-1.5">
+                  <Download className="w-[1.05em] h-[1.05em] shrink-0" />
                   版本資訊與檢查更新
                 </h3>
-                <span className="text-[12px] font-extrabold font-num text-[var(--fg-muted)]">
+                <span className="text-[length:calc(12.5px*var(--fs))] font-extrabold font-num text-[var(--fg-muted)]">
                   目前版本：v{APP_VERSION}（Build {APP_VERSION_CODE}）
                 </span>
               </div>
 
-              <div className="flex flex-col gap-1">
-                <label htmlFor="github-repo-input" className="text-[12px] font-extrabold">
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="github-repo-input" className="text-[length:calc(12.5px*var(--fs))] font-extrabold">
                   GitHub 儲存庫來源（帳號/專案名稱，APK 建置時會自動帶入）：
                 </label>
-                <div className="flex gap-1.5">
+                <div className="flex flex-wrap sm:flex-nowrap gap-1.5">
                   <input
                     id="github-repo-input"
                     type="text"
@@ -1837,16 +1845,16 @@ export default function App() {
                       }
                     }}
                     placeholder="例如：username/eink-clock"
-                    className="flex-1 min-w-0 p-2 text-[13px] font-mono-num border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
+                    className="flex-1 min-w-0 p-2 text-[length:calc(13.5px*var(--fs))] font-mono-num border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)]"
                   />
                   <button
                     type="button"
                     onClick={handleCheckAppUpdate}
                     disabled={updateCheckState.status === 'loading'}
-                    className={`${btnClass} disabled:opacity-50`}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-[length:calc(13px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
                   >
                     <RefreshCw
-                      className={`w-3.5 h-3.5 ${updateCheckState.status === 'loading' ? 'animate-spin' : ''}`}
+                      className={`w-[1em] h-[1em] shrink-0 ${updateCheckState.status === 'loading' ? 'animate-spin' : ''}`}
                     />
                     檢查更新
                   </button>
@@ -1854,13 +1862,13 @@ export default function App() {
               </div>
 
               {updateCheckState.status === 'loading' && (
-                <p className="text-[12px] font-bold px-2.5 py-2 rounded-[6px] border border-[var(--border-subtle)] bg-[var(--surface-subtle)]">
+                <p className="text-[length:calc(12.5px*var(--fs))] font-bold px-2.5 py-2 rounded-[6px] border border-[var(--border-subtle)] bg-[var(--surface-subtle)]">
                   {updateCheckState.message}
                 </p>
               )}
 
               {updateCheckState.status === 'error' && (
-                <p className="text-[12px] font-extrabold leading-[1.45] px-2.5 py-2 rounded-[6px] border border-[var(--border-color)] bg-[var(--surface-subtle)]">
+                <p className="text-[length:calc(12.5px*var(--fs))] font-extrabold leading-[1.5] px-2.5 py-2 rounded-[6px] border border-[var(--border-color)] bg-[var(--surface-subtle)]">
                   {updateCheckState.message}
                 </p>
               )}
@@ -1870,17 +1878,17 @@ export default function App() {
                   {updateCheckState.info.hasUpdate ? (
                     <>
                       <div className="flex flex-wrap items-baseline justify-between gap-2">
-                        <span className="text-[13.5px] font-black font-num">
+                        <span className="text-[length:calc(14px*var(--fs))] font-black font-num">
                           發現新版本：v{updateCheckState.info.latestVersion}
                         </span>
                         {updateCheckState.info.publishedAtLabel && (
-                          <span className="text-[11.5px] font-bold font-num text-[var(--fg-muted)]">
+                          <span className="text-[length:calc(12px*var(--fs))] font-bold font-num text-[var(--fg-muted)]">
                             發布於 {updateCheckState.info.publishedAtLabel}
                           </span>
                         )}
                       </div>
                       {updateCheckState.info.releaseNotes && (
-                        <p className="text-[12px] font-semibold leading-[1.45] whitespace-pre-line">
+                        <p className="text-[length:calc(12.5px*var(--fs))] font-semibold leading-[1.5] whitespace-pre-line">
                           {updateCheckState.info.releaseNotes}
                         </p>
                       )}
@@ -1892,9 +1900,9 @@ export default function App() {
                           }
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-black border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--surface-active)] text-[var(--fg-inverse)] no-underline"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[length:calc(13.5px*var(--fs))] font-black border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--surface-active)] text-[var(--fg-inverse)] no-underline"
                         >
-                          <Download className="w-3.5 h-3.5 shrink-0" />
+                          <Download className="w-[1em] h-[1em] shrink-0" />
                           {updateCheckState.info.apkDownloadUrl
                             ? '下載新版 APK 並安裝'
                             : '前往下載新版 APK'}
@@ -1903,19 +1911,19 @@ export default function App() {
                           href={updateCheckState.info.releasePageUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[12px] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] no-underline"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[length:calc(12.5px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] no-underline"
                         >
-                          <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                          <ExternalLink className="w-[1em] h-[1em] shrink-0" />
                           GitHub 發行頁
                         </a>
                       </div>
-                      <p className="text-[11px] font-semibold text-[var(--fg-muted)] leading-[1.4]">
+                      <p className="text-[length:calc(12px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.45]">
                         點擊後會由系統瀏覽器下載 APK；下載完成點擊安裝即可直接覆蓋升級，原有 API Key、日曆與字體設定皆會保留。
                       </p>
                     </>
                   ) : (
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-[13px] font-extrabold font-num">
+                      <span className="text-[length:calc(13.5px*var(--fs))] font-extrabold font-num">
                         目前已是最新版本（v{updateCheckState.info.currentVersion}，線上最新 v
                         {updateCheckState.info.latestVersion}）
                       </span>
@@ -1923,9 +1931,9 @@ export default function App() {
                         href={updateCheckState.info.releasePageUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-[12px] font-bold underline underline-offset-2 text-[var(--fg-color)]"
+                        className="inline-flex items-center gap-1 text-[length:calc(12.5px*var(--fs))] font-bold underline underline-offset-2 text-[var(--fg-color)]"
                       >
-                        <ExternalLink className="w-3 h-3 shrink-0" />
+                        <ExternalLink className="w-[0.95em] h-[0.95em] shrink-0" />
                         查看發行頁
                       </a>
                     </div>
@@ -1936,16 +1944,16 @@ export default function App() {
 
             {/* 區塊五：電子紙專用簡易使用說明 */}
             <div className="flex flex-col gap-2 bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[8px] p-3.5">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-[14px] font-black flex items-center gap-1.5">
-                  <BookOpen className="w-4 h-4 shrink-0" />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-[length:calc(14.5px*var(--fs))] font-black flex items-center gap-1.5">
+                  <BookOpen className="w-[1.05em] h-[1.05em] shrink-0" />
                   簡易使用說明（電子紙閱讀器專用）
                 </h3>
-                <span className="text-[11px] font-extrabold text-[var(--fg-muted)] whitespace-nowrap">
+                <span className="text-[length:calc(12px*var(--fs))] font-extrabold text-[var(--fg-muted)] whitespace-nowrap">
                   E-Ink 專用版
                 </span>
               </div>
-              <ol className="list-decimal pl-4 flex flex-col gap-1.5 text-[12px] leading-[1.5] font-semibold">
+              <ol className="list-decimal pl-[1.4em] flex flex-col gap-2 text-[length:calc(13px*var(--fs))] leading-[1.6] font-semibold">
                 <li>
                   <span className="font-extrabold">尺寸、雙頁切換與字體大小：</span>
                   支援 4.3 吋（閱星瞳 XTEINK X4）、6 吋原生閱讀器、10.3 吋黑白（如 BOOX 10.3）及手機型閱讀器（如 Viwoods AiPaper）。其中 4.3 吋採雙頁排版（第 1 頁時鐘天氣、第 2 頁農曆日曆），可透過「左右滑動」、「底部切換按鈕」或「實體翻頁鍵／音量鍵／方向鍵」切換；字體大小可在設定最上方調整 85%～170%（10.3 吋建議 130%～150%）。
@@ -1963,8 +1971,8 @@ export default function App() {
                   只需填入一組免費申請的「中央氣象署 OpenData 授權碼」即可同時使用氣象預報與空品；金鑰與 Google 日曆 .ics 網址皆僅存於本機閱讀器，絕不打包進程式碼或 APK。
                 </li>
                 <li>
-                  <span className="font-extrabold">Android APK 獨立運作：</span>
-                  安裝為電子紙 APK 後，啟動與喚醒時會自動啟用螢幕常亮（不休眠）與沉浸式全螢幕；農曆、二十四節氣與台灣國定假日支援離線顯示。
+                  <span className="font-extrabold">Android APK 獨立運作與線上更新：</span>
+                  安裝為電子紙 APK 後，啟動與喚醒時會自動啟用螢幕常亮（不休眠）與沉浸式全螢幕；農曆、二十四節氣與台灣國定假日支援離線顯示，並可透過設定內「檢查更新」直接從 GitHub 下載新版覆蓋升級。
                 </li>
               </ol>
             </div>
@@ -1973,14 +1981,14 @@ export default function App() {
               <button
                 type="button"
                 onClick={saveSettings}
-                className="flex-1 py-2.5 text-[14px] font-extrabold border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--surface-active)] text-[var(--fg-inverse)] cursor-pointer"
+                className="flex-1 py-2.5 text-[length:calc(14.5px*var(--fs))] font-extrabold border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--surface-active)] text-[var(--fg-inverse)] cursor-pointer"
               >
                 儲存並套用
               </button>
               <button
                 type="button"
                 onClick={() => setIsSettingsOpen(false)}
-                className="px-5 py-2.5 text-[14px] font-extrabold border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer"
+                className="px-5 py-2.5 text-[length:calc(14.5px*var(--fs))] font-extrabold border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer"
               >
                 取消
               </button>

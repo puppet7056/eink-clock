@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Maximize2, X } from 'lucide-react';
 import {
   getMonthCalendarCells,
   getTaiwanDayInfo,
@@ -29,6 +29,7 @@ interface CalendarPanelProps {
 }
 
 type CalendarView = 'agenda' | 'month';
+type EventModalMode = 'day' | 'all' | null;
 
 const WEEKDAY_HEADERS = ['日', '一', '二', '三', '四', '五', '六'];
 
@@ -46,6 +47,7 @@ export function CalendarPanel({
   const [cursorYear, setCursorYear] = useState<number>(() => today.getFullYear());
   const [cursorMonth, setCursorMonth] = useState<number>(() => today.getMonth());
   const [selectedDate, setSelectedDate] = useState<Date>(() => today);
+  const [eventModalMode, setEventModalMode] = useState<EventModalMode>(null);
 
   const todayY = today.getFullYear();
   const todayM = today.getMonth();
@@ -96,6 +98,48 @@ export function CalendarPanel({
     () => events.filter((ev) => ev.date >= stableToday),
     [events, stableToday]
   );
+
+  // 依日期分組全部未來行程（供放大檢視清單使用）
+  const groupedUpcomingEvents = useMemo(() => {
+    const groups: { key: string; date: Date; info: TaiwanDayInfo; items: CalendarEventItem[] }[] = [];
+    for (const ev of upcomingEvents) {
+      const key = `${ev.date.getFullYear()}-${ev.date.getMonth()}-${ev.date.getDate()}`;
+      const last = groups[groups.length - 1];
+      if (last && last.key === key) {
+        last.items.push(ev);
+      } else {
+        const dayDate = new Date(ev.date.getFullYear(), ev.date.getMonth(), ev.date.getDate());
+        groups.push({
+          key,
+          date: dayDate,
+          info: getTaiwanDayInfo(dayDate),
+          items: [ev],
+        });
+      }
+    }
+    return groups;
+  }, [upcomingEvents]);
+
+  // Esc 鍵關閉放大行程視窗
+  useEffect(() => {
+    if (!eventModalMode) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setEventModalMode(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [eventModalMode]);
+
+  const handleShiftSelectedDay = (deltaDays: number) => {
+    setSelectedDate((prev) => {
+      const next = new Date(prev.getFullYear(), prev.getMonth(), prev.getDate() + deltaDays);
+      setCursorYear(next.getFullYear());
+      setCursorMonth(next.getMonth());
+      return next;
+    });
+  };
 
   const handlePrevMonth = () => {
     if (cursorMonth === 0) {
@@ -297,7 +341,7 @@ export function CalendarPanel({
           >
             {monthCells.map(({ info, isCurrentMonth, isToday }) => {
               const isSelected = isSameDay(info.date, selectedDate);
-              const hasEvent = events.some((ev) => isSameDay(ev.date, info.date));
+              const dayEventCount = events.filter((ev) => isSameDay(ev.date, info.date)).length;
               const isHoliday = info.cellBadgeType === 'holiday';
               const isSolarTerm = info.cellBadgeType === 'solarTerm';
 
@@ -305,7 +349,13 @@ export function CalendarPanel({
                 <button
                   key={`${info.year}-${info.month}-${info.day}`}
                   type="button"
-                  onClick={() => setSelectedDate(info.date)}
+                  onClick={() => {
+                    if (isSelected && dayEventCount > 0) {
+                      setEventModalMode('day');
+                    } else {
+                      setSelectedDate(info.date);
+                    }
+                  }}
                   className={`relative flex flex-col items-center justify-center border-r border-b border-[var(--border-subtle)] px-0.5 py-0.5 text-center cursor-pointer transition-colors ${
                     !isCurrentMonth ? 'opacity-35' : ''
                   } ${
@@ -320,13 +370,21 @@ export function CalendarPanel({
                 >
                   <div className="flex items-center justify-center gap-0.5 leading-none">
                     <span className={`${dayNumClass} font-extrabold font-num`}>{info.day}</span>
-                    {hasEvent && (
-                      <span
-                        className={`w-2 h-2 rounded-full ${
-                          isToday ? 'bg-[var(--fg-inverse)]' : 'bg-[var(--fg-color)]'
-                        }`}
-                        aria-label="有行程"
-                      />
+                    {dayEventCount > 0 && (
+                      <span className="inline-flex items-center gap-[2px]" aria-label={`有 ${dayEventCount} 筆行程`}>
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            isToday ? 'bg-[var(--fg-inverse)]' : 'bg-[var(--fg-color)]'
+                          }`}
+                        />
+                        {dayEventCount > 1 && (
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              isToday ? 'bg-[var(--fg-inverse)]' : 'bg-[var(--fg-color)]'
+                            }`}
+                          />
+                        )}
+                      </span>
                     )}
                   </div>
                   <span
@@ -392,10 +450,22 @@ export function CalendarPanel({
               )}
             </div>
             {selectedDayEvents.length > 0 ? (
-              <span className="text-[length:calc(12.5px*var(--fs))] font-extrabold whitespace-nowrap truncate max-w-full">
-                行程：{selectedDayEvents[0].summary}
-                {selectedDayEvents.length > 1 ? ` +${selectedDayEvents.length - 1}` : ''}
-              </span>
+              <button
+                type="button"
+                onClick={() => setEventModalMode('day')}
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[length:calc(12.5px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[5px] bg-[var(--surface-subtle)] text-[var(--fg-color)] cursor-pointer max-w-full active:bg-[var(--surface-active)] active:text-[var(--fg-inverse)]"
+                title="點擊放大檢視當日所有行程"
+              >
+                <span className="truncate">
+                  行程：{selectedDayEvents[0].summary}
+                </span>
+                {selectedDayEvents.length > 1 && (
+                  <span className="px-1 py-0.25 text-[0.85em] font-black font-num rounded bg-[var(--surface-active)] text-[var(--fg-inverse)] whitespace-nowrap shrink-0">
+                    共{selectedDayEvents.length}筆
+                  </span>
+                )}
+                <Maximize2 className="w-[0.95em] h-[0.95em] shrink-0" />
+              </button>
             ) : hasIcalUrl && calendarError ? (
               <button
                 type="button"
@@ -438,8 +508,20 @@ export function CalendarPanel({
 
           {/* Google Calendar Events */}
           <div className="flex flex-col">
-            <div className="text-[length:calc(12.5px*var(--fs))] font-extrabold text-[var(--fg-muted)] pb-1">
-              Google 日曆行程
+            <div className="flex items-center justify-between gap-2 pb-1">
+              <span className="text-[length:calc(12.5px*var(--fs))] font-extrabold text-[var(--fg-muted)]">
+                Google 日曆行程（點擊可放大查看全部）
+              </span>
+              {upcomingEvents.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setEventModalMode('all')}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-[length:calc(12px*var(--fs-ctrl))] font-extrabold border border-[var(--border-color)] rounded-[5px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <Maximize2 className="w-[0.9em] h-[0.9em]" />
+                  展開全部 ({upcomingEvents.length})
+                </button>
+              )}
             </div>
             {!hasIcalUrl ? (
               <div className="flex items-center justify-between gap-2 py-2 border-t border-[var(--border-subtle)] text-[length:calc(14px*var(--fs))]">
@@ -472,23 +554,42 @@ export function CalendarPanel({
                 未來 60 天內無排定行程（{syncStatus}）
               </div>
             ) : (
-              <ul className="list-none flex flex-col divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
-                {upcomingEvents.slice(0, 10).map((ev) => (
-                  <li
-                    key={ev.id}
-                    className={`py-2 flex items-center gap-3 ${
-                      deviceScale === 'tablet10'
-                        ? 'text-[length:calc(17.5px*var(--fs))]'
-                        : 'text-[length:calc(14.5px*var(--fs))]'
-                    }`}
+              <>
+                <ul className="list-none flex flex-col divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
+                  {upcomingEvents.slice(0, 10).map((ev) => (
+                    <li key={ev.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedDate(
+                            new Date(ev.date.getFullYear(), ev.date.getMonth(), ev.date.getDate())
+                          );
+                          setEventModalMode('all');
+                        }}
+                        className={`w-full py-2 flex items-center gap-3 text-left cursor-pointer hover:bg-[var(--surface-subtle)] ${
+                          deviceScale === 'tablet10'
+                            ? 'text-[length:calc(17.5px*var(--fs))]'
+                            : 'text-[length:calc(14.5px*var(--fs))]'
+                        }`}
+                      >
+                        <span className="text-[length:calc(13.5px*var(--fs))] font-extrabold font-num whitespace-nowrap min-w-[6.2em] shrink-0">
+                          {ev.timeLabel}
+                        </span>
+                        <span className="font-bold truncate flex-1">{ev.summary}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                {upcomingEvents.length > 10 && (
+                  <button
+                    type="button"
+                    onClick={() => setEventModalMode('all')}
+                    className="mt-1.5 py-1.5 px-3 text-[length:calc(13px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--surface-subtle)] text-[var(--fg-color)] cursor-pointer"
                   >
-                    <span className="text-[length:calc(13.5px*var(--fs))] font-extrabold font-num whitespace-nowrap min-w-[6.2em] shrink-0">
-                      {ev.timeLabel}
-                    </span>
-                    <span className="font-bold truncate">{ev.summary}</span>
-                  </li>
-                ))}
-              </ul>
+                    尚有 {upcomingEvents.length - 10} 筆行程，點此放大查看全部
+                  </button>
+                )}
+              </>
             )}
           </div>
 
@@ -526,6 +627,182 @@ export function CalendarPanel({
               </ul>
             </div>
           )}
+        </div>
+      )}
+
+      {/* 放大檢視所有行程彈窗（支援完整換行顯示當日多筆行程與全部近期行程） */}
+      {eventModalMode && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="放大檢視行程列表"
+          className="fixed inset-0 z-[95] bg-[var(--bg-color)] text-[var(--fg-color)] p-3 sm:p-6 flex flex-col items-center justify-center overflow-hidden"
+        >
+          <div className="w-full max-w-[760px] max-h-full flex flex-col border-2 border-[var(--border-color)] rounded-[10px] p-4 sm:p-5 bg-[var(--bg-color)]">
+            {/* Modal Header */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b-2 border-[var(--border-color)] shrink-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <CalendarDays className="w-[1.2em] h-[1.2em] text-[length:calc(18px*var(--fs))] shrink-0" />
+                <div
+                  role="tablist"
+                  aria-label="行程檢視範圍切換"
+                  className="inline-flex items-center border-[1.5px] border-[var(--border-color)] rounded-[6px] overflow-hidden"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={eventModalMode === 'day'}
+                    onClick={() => setEventModalMode('day')}
+                    className={`px-3 py-1 text-[length:calc(14px*var(--fs))] font-black cursor-pointer whitespace-nowrap ${
+                      eventModalMode === 'day'
+                        ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                        : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
+                    }`}
+                  >
+                    當日行程（{selectedInfo.month}/{selectedInfo.day}）
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={eventModalMode === 'all'}
+                    onClick={() => setEventModalMode('all')}
+                    className={`px-3 py-1 text-[length:calc(14px*var(--fs))] font-black cursor-pointer whitespace-nowrap border-l-[1.5px] border-[var(--border-color)] ${
+                      eventModalMode === 'all'
+                        ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                        : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
+                    }`}
+                  >
+                    全部近期行程（{upcomingEvents.length}）
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setEventModalMode(null)}
+                className="inline-flex items-center gap-1 px-3 py-1 text-[length:calc(14px*var(--fs))] font-black border-2 border-[var(--border-color)] rounded-[6px] bg-[var(--surface-active)] text-[var(--fg-inverse)] cursor-pointer whitespace-nowrap"
+              >
+                <X className="w-[1.05em] h-[1.05em]" />
+                關閉
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="flex-1 overflow-y-auto pt-3 min-h-0 flex flex-col gap-3">
+              {eventModalMode === 'day' ? (
+                <>
+                  {/* Day Navigation & Info */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[8px] px-3 py-2 shrink-0">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="text-[length:calc(18px*var(--fs))] font-black font-num">
+                        {selectedInfo.year}/{selectedInfo.month}/{selectedInfo.day}（
+                        {selectedInfo.weekdayLabel}）
+                      </span>
+                      <span className="text-[length:calc(14px*var(--fs))] font-bold text-[var(--fg-muted)]">
+                        農曆 {selectedInfo.lunarMonthText}
+                        {selectedInfo.lunarDayText}
+                        {selectedInfo.holiday ? ` · 國定假日：${selectedInfo.holiday}` : ''}
+                        {selectedInfo.solarTerm ? ` · ${selectedInfo.solarTerm}` : ''}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleShiftSelectedDay(-1)}
+                        className="inline-flex items-center gap-0.5 px-2 py-1 text-[length:calc(13px*var(--fs))] font-extrabold border border-[var(--border-color)] rounded-[5px] bg-[var(--bg-color)] cursor-pointer"
+                      >
+                        <ChevronLeft className="w-[1em] h-[1em]" />
+                        前一天
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleShiftSelectedDay(1)}
+                        className="inline-flex items-center gap-0.5 px-2 py-1 text-[length:calc(13px*var(--fs))] font-extrabold border border-[var(--border-color)] rounded-[5px] bg-[var(--bg-color)] cursor-pointer"
+                      >
+                        後一天
+                        <ChevronRight className="w-[1em] h-[1em]" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {selectedDayEvents.length === 0 ? (
+                    <div className="py-8 text-center text-[length:calc(16px*var(--fs))] font-bold text-[var(--fg-muted)]">
+                      這一天沒有排定 Google 日曆行程
+                    </div>
+                  ) : (
+                    <ul className="list-none flex flex-col divide-y-2 divide-[var(--border-subtle)] border-y-2 border-[var(--border-color)]">
+                      {selectedDayEvents.map((ev, idx) => (
+                        <li key={ev.id} className="py-3 flex items-start gap-3">
+                          <span className="px-2 py-0.5 text-[length:calc(14px*var(--fs))] font-black font-num border-[1.5px] border-[var(--border-color)] rounded-[5px] bg-[var(--surface-subtle)] whitespace-nowrap shrink-0 mt-0.5">
+                            {ev.isAllDay ? '全天' : ev.timeLabel.split(' ')[1] || ev.timeLabel}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[length:calc(18px*var(--fs))] font-black leading-[1.45] break-words whitespace-normal">
+                              {ev.summary}
+                            </div>
+                            <div className="text-[length:calc(12.5px*var(--fs))] font-bold text-[var(--fg-muted)] font-num mt-0.5">
+                              第 {idx + 1} / {selectedDayEvents.length} 項行程
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              ) : groupedUpcomingEvents.length === 0 ? (
+                <div className="py-8 text-center text-[length:calc(16px*var(--fs))] font-bold text-[var(--fg-muted)]">
+                  未來 60 天內無排定行程（{syncStatus}）
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {groupedUpcomingEvents.map((group) => {
+                    const isGroupToday = isSameDay(group.date, stableToday);
+                    return (
+                      <div
+                        key={group.key}
+                        className="border-[1.5px] border-[var(--border-color)] rounded-[8px] overflow-hidden"
+                      >
+                        <div
+                          className={`px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 ${
+                            isGroupToday
+                              ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                              : 'bg-[var(--surface-subtle)] text-[var(--fg-color)]'
+                          } border-b border-[var(--border-color)]`}
+                        >
+                          <span className="text-[length:calc(15px*var(--fs))] font-black font-num">
+                            {group.info.month}/{group.info.day}（{group.info.weekdayLabel}）
+                            {isGroupToday ? ' · 今天' : ''}
+                          </span>
+                          <span
+                            className={`text-[length:calc(12.5px*var(--fs))] font-bold ${
+                              isGroupToday ? 'text-[var(--fg-inverse)]' : 'text-[var(--fg-muted)]'
+                            }`}
+                          >
+                            農曆 {group.info.lunarMonthText}
+                            {group.info.lunarDayText}
+                            {group.info.holiday ? ` · ${group.info.holiday}` : ''} · 共{' '}
+                            {group.items.length} 筆
+                          </span>
+                        </div>
+                        <ul className="list-none flex flex-col divide-y divide-[var(--border-subtle)] bg-[var(--bg-color)]">
+                          {group.items.map((ev) => (
+                            <li key={ev.id} className="px-3 py-2.5 flex items-start gap-3">
+                              <span className="text-[length:calc(14.5px*var(--fs))] font-extrabold font-num whitespace-nowrap min-w-[4.2em] shrink-0 pt-0.5">
+                                {ev.isAllDay ? '全天' : ev.timeLabel.split(' ')[1] || ev.timeLabel}
+                              </span>
+                              <span className="text-[length:calc(16.5px*var(--fs))] font-extrabold leading-[1.45] break-words whitespace-normal flex-1">
+                                {ev.summary}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </section>
