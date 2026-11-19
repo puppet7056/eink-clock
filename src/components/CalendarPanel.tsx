@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, Maximize2, X } from 'lucide-react';
+import { CalendarDays, CheckSquare, ChevronLeft, ChevronRight, Maximize2, X } from 'lucide-react';
 import {
   getMonthCalendarCells,
   getTaiwanDayInfo,
@@ -7,6 +7,8 @@ import {
   isSameDay,
   type TaiwanDayInfo,
 } from '../utils/taiwanCalendar';
+import type { GoogleTaskItem } from '../utils/googleWorkspace';
+import { GoogleSignInButton } from './GoogleSignInButton';
 import type { DeviceScale } from './WeatherPanel';
 
 export interface CalendarEventItem {
@@ -15,32 +17,47 @@ export interface CalendarEventItem {
   timeLabel: string;
   summary: string;
   isAllDay: boolean;
+  kind?: 'event' | 'task';
+  listTitle?: string;
+  notes?: string;
 }
 
 interface CalendarPanelProps {
   today: Date;
   events: CalendarEventItem[];
+  tasks: GoogleTaskItem[];
   hasIcalUrl: boolean;
+  isGoogleConnected: boolean;
+  needsGoogleAuth: boolean;
+  googleUserEmail: string | null;
+  googleAuthLoading: boolean;
   syncStatus: string;
   calendarError?: string | null;
   isLandscape: boolean;
   deviceScale: DeviceScale;
+  onGoogleSignIn: () => void;
   onOpenSettings: () => void;
 }
 
 type CalendarView = 'agenda' | 'month';
-type EventModalMode = 'day' | 'all' | null;
+type EventModalMode = 'day' | 'all' | 'tasks' | null;
 
 const WEEKDAY_HEADERS = ['日', '一', '二', '三', '四', '五', '六'];
 
 export function CalendarPanel({
   today,
   events,
+  tasks,
   hasIcalUrl,
+  isGoogleConnected,
+  needsGoogleAuth,
+  googleUserEmail,
+  googleAuthLoading,
   syncStatus,
   calendarError = null,
   isLandscape,
   deviceScale,
+  onGoogleSignIn,
   onOpenSettings,
 }: CalendarPanelProps) {
   const [view, setView] = useState<CalendarView>('month');
@@ -48,6 +65,8 @@ export function CalendarPanel({
   const [cursorMonth, setCursorMonth] = useState<number>(() => today.getMonth());
   const [selectedDate, setSelectedDate] = useState<Date>(() => today);
   const [eventModalMode, setEventModalMode] = useState<EventModalMode>(null);
+
+  const hasCalendarSource = isGoogleConnected || hasIcalUrl;
 
   const todayY = today.getFullYear();
   const todayM = today.getMonth();
@@ -94,15 +113,39 @@ export function CalendarPanel({
     [events, selectedDate]
   );
 
+  const selectedDayTasks = useMemo(
+    () => tasks.filter((t) => t.dueDate !== null && isSameDay(t.dueDate, selectedDate)),
+    [tasks, selectedDate]
+  );
+
   const upcomingEvents = useMemo(
     () => events.filter((ev) => ev.date >= stableToday),
     [events, stableToday]
   );
 
-  // 依日期分組全部未來行程（供放大檢視清單使用）
+  const totalBadgeCount = upcomingEvents.length + tasks.length;
+
+  // 依日期分組全部未來行程與有截止日的待辦工作（供放大檢視清單使用）
   const groupedUpcomingEvents = useMemo(() => {
+    const datedTasksAsItems: CalendarEventItem[] = tasks
+      .filter((t): t is GoogleTaskItem & { dueDate: Date } => t.dueDate !== null && t.dueDate >= stableToday)
+      .map((t) => ({
+        id: `task-${t.id}`,
+        date: t.dueDate,
+        timeLabel: `${t.dueLabel} 待辦`,
+        summary: t.title,
+        isAllDay: true,
+        kind: 'task',
+        listTitle: t.listTitle,
+        notes: t.notes,
+      }));
+
+    const combined = [...upcomingEvents, ...datedTasksAsItems].sort(
+      (a, b) => a.date.getTime() - b.date.getTime()
+    );
+
     const groups: { key: string; date: Date; info: TaiwanDayInfo; items: CalendarEventItem[] }[] = [];
-    for (const ev of upcomingEvents) {
+    for (const ev of combined) {
       const key = `${ev.date.getFullYear()}-${ev.date.getMonth()}-${ev.date.getDate()}`;
       const last = groups[groups.length - 1];
       if (last && last.key === key) {
@@ -118,7 +161,7 @@ export function CalendarPanel({
       }
     }
     return groups;
-  }, [upcomingEvents]);
+  }, [upcomingEvents, tasks, stableToday]);
 
   // Esc 鍵關閉放大行程視窗
   useEffect(() => {
@@ -232,10 +275,10 @@ export function CalendarPanel({
               }`}
             >
               近期日程
-              {hasIcalUrl && calendarError
+              {hasCalendarSource && calendarError
                 ? ' (!)'
-                : hasIcalUrl && upcomingEvents.length > 0
-                  ? ` (${upcomingEvents.length})`
+                : hasCalendarSource && totalBadgeCount > 0
+                  ? ` (${totalBadgeCount})`
                   : ''}
             </button>
           </div>
@@ -280,7 +323,7 @@ export function CalendarPanel({
           )}
         </div>
 
-        {view === 'month' && hasIcalUrl && calendarError ? (
+        {view === 'month' && hasCalendarSource && calendarError ? (
           <button
             type="button"
             onClick={onOpenSettings}
@@ -342,6 +385,10 @@ export function CalendarPanel({
             {monthCells.map(({ info, isCurrentMonth, isToday }) => {
               const isSelected = isSameDay(info.date, selectedDate);
               const dayEventCount = events.filter((ev) => isSameDay(ev.date, info.date)).length;
+              const dayTaskCount = tasks.filter(
+                (t) => t.dueDate !== null && isSameDay(t.dueDate, info.date)
+              ).length;
+              const dayTotalCount = dayEventCount + dayTaskCount;
               const isHoliday = info.cellBadgeType === 'holiday';
               const isSolarTerm = info.cellBadgeType === 'solarTerm';
 
@@ -350,7 +397,7 @@ export function CalendarPanel({
                   key={`${info.year}-${info.month}-${info.day}`}
                   type="button"
                   onClick={() => {
-                    if (isSelected && dayEventCount > 0) {
+                    if (isSelected && dayTotalCount > 0) {
                       setEventModalMode('day');
                     } else {
                       setSelectedDate(info.date);
@@ -370,17 +417,29 @@ export function CalendarPanel({
                 >
                   <div className="flex items-center justify-center gap-0.5 leading-none">
                     <span className={`${dayNumClass} font-extrabold font-num`}>{info.day}</span>
-                    {dayEventCount > 0 && (
-                      <span className="inline-flex items-center gap-[2px]" aria-label={`有 ${dayEventCount} 筆行程`}>
-                        <span
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            isToday ? 'bg-[var(--fg-inverse)]' : 'bg-[var(--fg-color)]'
-                          }`}
-                        />
+                    {dayTotalCount > 0 && (
+                      <span
+                        className="inline-flex items-center gap-[2px]"
+                        aria-label={`有 ${dayEventCount} 筆行程與 ${dayTaskCount} 筆待辦`}
+                      >
+                        {dayEventCount > 0 && (
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              isToday ? 'bg-[var(--fg-inverse)]' : 'bg-[var(--fg-color)]'
+                            }`}
+                          />
+                        )}
                         {dayEventCount > 1 && (
                           <span
                             className={`w-1.5 h-1.5 rounded-full ${
                               isToday ? 'bg-[var(--fg-inverse)]' : 'bg-[var(--fg-color)]'
+                            }`}
+                          />
+                        )}
+                        {dayTaskCount > 0 && (
+                          <span
+                            className={`w-1.5 h-1.5 border-[1.5px] ${
+                              isToday ? 'border-[var(--fg-inverse)]' : 'border-[var(--fg-color)]'
                             }`}
                           />
                         )}
@@ -449,30 +508,52 @@ export function CalendarPanel({
                 </>
               )}
             </div>
-            {selectedDayEvents.length > 0 ? (
+            {selectedDayEvents.length + selectedDayTasks.length > 0 ? (
               <button
                 type="button"
                 onClick={() => setEventModalMode('day')}
                 className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[length:calc(12.5px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[5px] bg-[var(--surface-subtle)] text-[var(--fg-color)] cursor-pointer max-w-full active:bg-[var(--surface-active)] active:text-[var(--fg-inverse)]"
-                title="點擊放大檢視當日所有行程"
+                title="點擊放大檢視當日所有行程與待辦工作"
               >
                 <span className="truncate">
-                  行程：{selectedDayEvents[0].summary}
+                  {selectedDayEvents.length > 0
+                    ? `行程：${selectedDayEvents[0].summary}`
+                    : `待辦：${selectedDayTasks[0].title}`}
                 </span>
-                {selectedDayEvents.length > 1 && (
+                {selectedDayEvents.length + selectedDayTasks.length > 1 && (
                   <span className="px-1 py-0.25 text-[0.85em] font-black font-num rounded bg-[var(--surface-active)] text-[var(--fg-inverse)] whitespace-nowrap shrink-0">
-                    共{selectedDayEvents.length}筆
+                    共{selectedDayEvents.length + selectedDayTasks.length}筆
                   </span>
                 )}
                 <Maximize2 className="w-[0.95em] h-[0.95em] shrink-0" />
               </button>
-            ) : hasIcalUrl && calendarError ? (
+            ) : tasks.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setEventModalMode('tasks')}
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[length:calc(12.5px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[5px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer whitespace-nowrap shrink-0"
+                title="檢視所有 Google 待辦工作"
+              >
+                <CheckSquare className="w-[0.95em] h-[0.95em] shrink-0" />
+                <span className="font-num">待辦工作 {tasks.length} 筆</span>
+                <Maximize2 className="w-[0.9em] h-[0.9em] shrink-0" />
+              </button>
+            ) : hasCalendarSource && calendarError ? (
               <button
                 type="button"
                 onClick={onOpenSettings}
                 className="text-[length:calc(12px*var(--fs))] font-bold underline underline-offset-2 truncate max-w-full cursor-pointer"
               >
                 {calendarError}
+              </button>
+            ) : !hasCalendarSource ? (
+              <button
+                type="button"
+                onClick={onGoogleSignIn}
+                disabled={googleAuthLoading}
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-[length:calc(12px*var(--fs-ctrl))] font-extrabold border border-[var(--border-color)] rounded-[5px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+              >
+                {googleAuthLoading ? '登入中...' : '登入 Google 同步行程與待辦'}
               </button>
             ) : null}
           </div>
@@ -506,11 +587,31 @@ export function CalendarPanel({
             ) : null}
           </div>
 
+          {/* Google 帳號重新授權提示（當曾登入但記憶體憑證因重整頁面失效時） */}
+          {needsGoogleAuth && !isGoogleConnected && googleUserEmail && (
+            <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--surface-subtle)] shrink-0">
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <span className="text-[length:calc(13px*var(--fs))] font-black">
+                  請重新授權 Google 帳號（{googleUserEmail}）
+                </span>
+                <span className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
+                  重新載入頁面後需再次驗證，以讀取最新日曆活動與待辦工作。
+                </span>
+              </div>
+              <GoogleSignInButton
+                onClick={onGoogleSignIn}
+                loading={googleAuthLoading}
+                label="Sign in with Google"
+                compact
+              />
+            </div>
+          )}
+
           {/* Google Calendar Events */}
           <div className="flex flex-col">
             <div className="flex items-center justify-between gap-2 pb-1">
               <span className="text-[length:calc(12.5px*var(--fs))] font-extrabold text-[var(--fg-muted)]">
-                Google 日曆行程（點擊可放大查看全部）
+                Google 日曆活動（點擊可放大查看全部）
               </span>
               {upcomingEvents.length > 0 && (
                 <button
@@ -523,40 +624,54 @@ export function CalendarPanel({
                 </button>
               )}
             </div>
-            {!hasIcalUrl ? (
-              <div className="flex items-center justify-between gap-2 py-2 border-t border-[var(--border-subtle)] text-[length:calc(14px*var(--fs))]">
-                <span className="font-semibold text-[var(--fg-muted)]">
-                  尚未連結 Google 日曆 iCal 網址
+            {!hasCalendarSource ? (
+              <div className="flex flex-col gap-2.5 py-2.5 px-3 border border-[var(--border-subtle)] rounded-[6px] bg-[var(--surface-subtle)]">
+                <span className="text-[length:calc(13.5px*var(--fs))] font-bold leading-[1.45]">
+                  直接登入您的 Google 帳號，即可同步顯示「日曆活動」與「Google 待辦工作」。
                 </span>
-                <button
-                  type="button"
-                  onClick={onOpenSettings}
-                  className="px-2.5 py-1 text-[length:calc(13px*var(--fs-ctrl))] font-bold border-[1.5px] border-[var(--border-color)] rounded-[5px] cursor-pointer whitespace-nowrap"
-                >
-                  前往設定
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <GoogleSignInButton
+                    onClick={onGoogleSignIn}
+                    loading={googleAuthLoading}
+                    label="Sign in with Google"
+                    compact
+                  />
+                  <button
+                    type="button"
+                    onClick={onOpenSettings}
+                    className="px-2.5 py-1.5 text-[length:calc(12.5px*var(--fs-ctrl))] font-bold border border-[var(--border-color)] rounded-[5px] bg-[var(--bg-color)] cursor-pointer whitespace-nowrap"
+                  >
+                    或貼上 .ics 網址
+                  </button>
+                </div>
               </div>
             ) : calendarError ? (
               <div className="flex flex-col gap-2 py-2 px-2.5 border border-[var(--border-color)] rounded-[6px] bg-[var(--surface-subtle)] text-[length:calc(13px*var(--fs))]">
                 <span className="font-extrabold leading-[1.45]">{calendarError}</span>
-                <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <GoogleSignInButton
+                    onClick={onGoogleSignIn}
+                    loading={googleAuthLoading}
+                    label="Sign in with Google"
+                    compact
+                  />
                   <button
                     type="button"
                     onClick={onOpenSettings}
-                    className="px-2.5 py-1 text-[length:calc(12.5px*var(--fs-ctrl))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[5px] bg-[var(--bg-color)] cursor-pointer whitespace-nowrap"
+                    className="px-2.5 py-1.5 text-[length:calc(12.5px*var(--fs-ctrl))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[5px] bg-[var(--bg-color)] cursor-pointer whitespace-nowrap"
                   >
-                    檢查 iCal 網址設定
+                    檢查日曆設定
                   </button>
                 </div>
               </div>
             ) : upcomingEvents.length === 0 ? (
               <div className="py-2 border-t border-[var(--border-subtle)] text-[length:calc(14px*var(--fs))] font-semibold text-[var(--fg-muted)]">
-                未來 60 天內無排定行程（{syncStatus}）
+                未來 60 天內無排定活動（{syncStatus}）
               </div>
             ) : (
               <>
                 <ul className="list-none flex flex-col divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
-                  {upcomingEvents.slice(0, 10).map((ev) => (
+                  {upcomingEvents.slice(0, 8).map((ev) => (
                     <li key={ev.id}>
                       <button
                         type="button"
@@ -580,18 +695,99 @@ export function CalendarPanel({
                     </li>
                   ))}
                 </ul>
-                {upcomingEvents.length > 10 && (
+                {upcomingEvents.length > 8 && (
                   <button
                     type="button"
                     onClick={() => setEventModalMode('all')}
                     className="mt-1.5 py-1.5 px-3 text-[length:calc(13px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--surface-subtle)] text-[var(--fg-color)] cursor-pointer"
                   >
-                    尚有 {upcomingEvents.length - 10} 筆行程，點此放大查看全部
+                    尚有 {upcomingEvents.length - 8} 筆活動，點此放大查看全部
                   </button>
                 )}
               </>
             )}
           </div>
+
+          {/* Google Tasks（待辦工作） */}
+          {(isGoogleConnected || hasIcalUrl) && (
+            <div className="flex flex-col pt-1">
+              <div className="flex items-center justify-between gap-2 pb-1">
+                <span className="text-[length:calc(12.5px*var(--fs))] font-extrabold text-[var(--fg-muted)] flex items-center gap-1">
+                  <CheckSquare className="w-[1em] h-[1em] shrink-0" />
+                  Google 待辦工作（Tasks）
+                </span>
+                {tasks.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setEventModalMode('tasks')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 text-[length:calc(12px*var(--fs-ctrl))] font-extrabold border border-[var(--border-color)] rounded-[5px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    <Maximize2 className="w-[0.9em] h-[0.9em]" />
+                    展開全部 ({tasks.length})
+                  </button>
+                )}
+              </div>
+
+              {!isGoogleConnected ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 py-2 px-2.5 border border-[var(--border-subtle)] rounded-[6px] bg-[var(--surface-subtle)]">
+                  <span className="text-[length:calc(12.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
+                    .ics 僅含日曆活動；登入 Google 帳號可一併顯示待辦工作
+                  </span>
+                  <GoogleSignInButton
+                    onClick={onGoogleSignIn}
+                    loading={googleAuthLoading}
+                    label="Sign in with Google"
+                    compact
+                  />
+                </div>
+              ) : tasks.length === 0 ? (
+                <div className="py-2 border-t border-[var(--border-subtle)] text-[length:calc(13.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
+                  目前無未完成的待辦工作
+                </div>
+              ) : (
+                <>
+                  <ul className="list-none flex flex-col divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
+                    {tasks.slice(0, 6).map((task) => (
+                      <li key={task.id}>
+                        <button
+                          type="button"
+                          onClick={() => setEventModalMode('tasks')}
+                          className={`w-full py-2 flex items-center gap-2.5 text-left cursor-pointer hover:bg-[var(--surface-subtle)] ${
+                            deviceScale === 'tablet10'
+                              ? 'text-[length:calc(17px*var(--fs))]'
+                              : 'text-[length:calc(14px*var(--fs))]'
+                          }`}
+                        >
+                          <span
+                            className={`px-1.5 py-0.5 text-[length:calc(12px*var(--fs))] font-extrabold font-num rounded-[4px] border whitespace-nowrap shrink-0 ${
+                              task.isOverdue
+                                ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)] border-[var(--border-color)]'
+                                : 'bg-[var(--surface-subtle)] text-[var(--fg-color)] border-[var(--border-subtle)]'
+                            }`}
+                          >
+                            {task.isOverdue ? `逾期 ${task.dueLabel}` : task.dueLabel}
+                          </span>
+                          <span className="font-bold truncate flex-1">{task.title}</span>
+                          <span className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)] whitespace-nowrap shrink-0">
+                            {task.listTitle}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {tasks.length > 6 && (
+                    <button
+                      type="button"
+                      onClick={() => setEventModalMode('tasks')}
+                      className="mt-1.5 py-1.5 px-3 text-[length:calc(13px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--surface-subtle)] text-[var(--fg-color)] cursor-pointer"
+                    >
+                      尚有 {tasks.length - 6} 筆待辦工作，點此放大查看全部
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
 
           {/* Upcoming Taiwan National Holidays */}
           {upcomingHolidays.length > 0 && (
@@ -659,7 +855,7 @@ export function CalendarPanel({
                         : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
                     }`}
                   >
-                    當日行程（{selectedInfo.month}/{selectedInfo.day}）
+                    當日（{selectedInfo.month}/{selectedInfo.day}）
                   </button>
                   <button
                     type="button"
@@ -672,8 +868,23 @@ export function CalendarPanel({
                         : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
                     }`}
                   >
-                    全部近期行程（{upcomingEvents.length}）
+                    全部日程（{upcomingEvents.length}）
                   </button>
+                  {isGoogleConnected && (
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={eventModalMode === 'tasks'}
+                      onClick={() => setEventModalMode('tasks')}
+                      className={`px-3 py-1 text-[length:calc(14px*var(--fs))] font-black cursor-pointer whitespace-nowrap border-l-[1.5px] border-[var(--border-color)] ${
+                        eventModalMode === 'tasks'
+                          ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                          : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
+                      }`}
+                    >
+                      待辦工作（{tasks.length}）
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -725,30 +936,111 @@ export function CalendarPanel({
                     </div>
                   </div>
 
-                  {selectedDayEvents.length === 0 ? (
+                  {selectedDayEvents.length === 0 && selectedDayTasks.length === 0 ? (
                     <div className="py-8 text-center text-[length:calc(16px*var(--fs))] font-bold text-[var(--fg-muted)]">
-                      這一天沒有排定 Google 日曆行程
+                      這一天沒有排定行程或到期之待辦工作
                     </div>
                   ) : (
-                    <ul className="list-none flex flex-col divide-y-2 divide-[var(--border-subtle)] border-y-2 border-[var(--border-color)]">
-                      {selectedDayEvents.map((ev, idx) => (
-                        <li key={ev.id} className="py-3 flex items-start gap-3">
-                          <span className="px-2 py-0.5 text-[length:calc(14px*var(--fs))] font-black font-num border-[1.5px] border-[var(--border-color)] rounded-[5px] bg-[var(--surface-subtle)] whitespace-nowrap shrink-0 mt-0.5">
-                            {ev.isAllDay ? '全天' : ev.timeLabel.split(' ')[1] || ev.timeLabel}
-                          </span>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-[length:calc(18px*var(--fs))] font-black leading-[1.45] break-words whitespace-normal">
-                              {ev.summary}
-                            </div>
-                            <div className="text-[length:calc(12.5px*var(--fs))] font-bold text-[var(--fg-muted)] font-num mt-0.5">
-                              第 {idx + 1} / {selectedDayEvents.length} 項行程
-                            </div>
+                    <div className="flex flex-col gap-3">
+                      {selectedDayEvents.length > 0 && (
+                        <div>
+                          <div className="text-[length:calc(13px*var(--fs))] font-extrabold text-[var(--fg-muted)] pb-1.5">
+                            日曆活動（{selectedDayEvents.length} 筆）
                           </div>
-                        </li>
-                      ))}
-                    </ul>
+                          <ul className="list-none flex flex-col divide-y-2 divide-[var(--border-subtle)] border-y-2 border-[var(--border-color)]">
+                            {selectedDayEvents.map((ev, idx) => (
+                              <li key={ev.id} className="py-3 flex items-start gap-3">
+                                <span className="px-2 py-0.5 text-[length:calc(14px*var(--fs))] font-black font-num border-[1.5px] border-[var(--border-color)] rounded-[5px] bg-[var(--surface-subtle)] whitespace-nowrap shrink-0 mt-0.5">
+                                  {ev.isAllDay ? '全天' : ev.timeLabel.split(' ')[1] || ev.timeLabel}
+                                </span>
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-[length:calc(18px*var(--fs))] font-black leading-[1.45] break-words whitespace-normal">
+                                    {ev.summary}
+                                  </div>
+                                  <div className="text-[length:calc(12.5px*var(--fs))] font-bold text-[var(--fg-muted)] font-num mt-0.5">
+                                    第 {idx + 1} / {selectedDayEvents.length} 項活動
+                                  </div>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {selectedDayTasks.length > 0 && (
+                        <div>
+                          <div className="text-[length:calc(13px*var(--fs))] font-extrabold text-[var(--fg-muted)] pb-1.5 flex items-center gap-1">
+                            <CheckSquare className="w-[1em] h-[1em]" />
+                            當日到期之待辦工作（{selectedDayTasks.length} 筆）
+                          </div>
+                          <ul className="list-none flex flex-col divide-y-2 divide-[var(--border-subtle)] border-y-2 border-[var(--border-color)]">
+                            {selectedDayTasks.map((task) => (
+                              <li key={task.id} className="py-3 flex items-start gap-3">
+                                <span
+                                  className={`px-2 py-0.5 text-[length:calc(13.5px*var(--fs))] font-black border-[1.5px] border-[var(--border-color)] rounded-[5px] whitespace-nowrap shrink-0 mt-0.5 ${
+                                    task.isOverdue
+                                      ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                                      : 'bg-[var(--bg-color)] text-[var(--fg-color)]'
+                                  }`}
+                                >
+                                  {task.isOverdue ? '逾期待辦' : '待辦工作'}
+                                </span>
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-[length:calc(18px*var(--fs))] font-black leading-[1.45] break-words whitespace-normal">
+                                    {task.title}
+                                  </div>
+                                  {task.notes && (
+                                    <div className="text-[length:calc(14px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.45] break-words whitespace-pre-line mt-1">
+                                      {task.notes}
+                                    </div>
+                                  )}
+                                  <div className="text-[length:calc(12.5px*var(--fs))] font-bold text-[var(--fg-muted)] mt-0.5">
+                                    清單：{task.listTitle}
+                                  </div>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </>
+              ) : eventModalMode === 'tasks' ? (
+                tasks.length === 0 ? (
+                  <div className="py-8 text-center text-[length:calc(16px*var(--fs))] font-bold text-[var(--fg-muted)]">
+                    目前沒有未完成的 Google 待辦工作
+                  </div>
+                ) : (
+                  <ul className="list-none flex flex-col divide-y-2 divide-[var(--border-subtle)] border-y-2 border-[var(--border-color)]">
+                    {tasks.map((task) => (
+                      <li key={task.id} className="py-3 flex items-start gap-3">
+                        <span
+                          className={`px-2 py-0.5 text-[length:calc(13.5px*var(--fs))] font-black font-num border-[1.5px] border-[var(--border-color)] rounded-[5px] whitespace-nowrap shrink-0 mt-0.5 ${
+                            task.isOverdue
+                              ? 'bg-[var(--surface-active)] text-[var(--fg-inverse)]'
+                              : 'bg-[var(--surface-subtle)] text-[var(--fg-color)]'
+                          }`}
+                        >
+                          {task.isOverdue ? `逾期 ${task.dueLabel}` : task.dueLabel}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[length:calc(18px*var(--fs))] font-black leading-[1.45] break-words whitespace-normal">
+                            {task.title}
+                          </div>
+                          {task.notes && (
+                            <div className="text-[length:calc(14px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.45] break-words whitespace-pre-line mt-1">
+                              {task.notes}
+                            </div>
+                          )}
+                          <div className="text-[length:calc(12.5px*var(--fs))] font-bold text-[var(--fg-muted)] mt-0.5">
+                            清單：{task.listTitle}
+                          </div>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )
               ) : groupedUpcomingEvents.length === 0 ? (
                 <div className="py-8 text-center text-[length:calc(16px*var(--fs))] font-bold text-[var(--fg-muted)]">
                   未來 60 天內無排定行程（{syncStatus}）
@@ -787,12 +1079,29 @@ export function CalendarPanel({
                         <ul className="list-none flex flex-col divide-y divide-[var(--border-subtle)] bg-[var(--bg-color)]">
                           {group.items.map((ev) => (
                             <li key={ev.id} className="px-3 py-2.5 flex items-start gap-3">
-                              <span className="text-[length:calc(14.5px*var(--fs))] font-extrabold font-num whitespace-nowrap min-w-[4.2em] shrink-0 pt-0.5">
-                                {ev.isAllDay ? '全天' : ev.timeLabel.split(' ')[1] || ev.timeLabel}
+                              <span
+                                className={`text-[length:calc(14px*var(--fs))] font-extrabold font-num whitespace-nowrap min-w-[4.5em] shrink-0 pt-0.5 ${
+                                  ev.kind === 'task'
+                                    ? 'underline underline-offset-2'
+                                    : ''
+                                }`}
+                              >
+                                {ev.kind === 'task'
+                                  ? '□ 待辦'
+                                  : ev.isAllDay
+                                    ? '全天'
+                                    : ev.timeLabel.split(' ')[1] || ev.timeLabel}
                               </span>
-                              <span className="text-[length:calc(16.5px*var(--fs))] font-extrabold leading-[1.45] break-words whitespace-normal flex-1">
-                                {ev.summary}
-                              </span>
+                              <div className="flex-1 min-w-0">
+                                <span className="text-[length:calc(16.5px*var(--fs))] font-extrabold leading-[1.45] break-words whitespace-normal block">
+                                  {ev.summary}
+                                </span>
+                                {ev.notes && (
+                                  <span className="text-[length:calc(13.5px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.4] break-words whitespace-pre-line block mt-0.5">
+                                    {ev.notes}
+                                  </span>
+                                )}
+                              </div>
                             </li>
                           ))}
                         </ul>

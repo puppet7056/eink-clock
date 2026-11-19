@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type TouchEvent } from 'react';
+import type { User } from 'firebase/auth';
 import {
   BatteryCharging,
   BatteryFull,
@@ -7,6 +8,7 @@ import {
   BatteryWarning,
   BookOpen,
   CalendarDays,
+  CheckSquare,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -16,6 +18,7 @@ import {
   EyeOff,
   KeyRound,
   LightbulbOff,
+  LogOut,
   Monitor,
   Moon,
   RefreshCw,
@@ -29,6 +32,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { CalendarPanel, type CalendarEventItem } from './components/CalendarPanel';
+import { GoogleSignInButton } from './components/GoogleSignInButton';
 import { WeatherPanel, type DeviceScale } from './components/WeatherPanel';
 import {
   findTownPreset,
@@ -60,6 +64,16 @@ import {
   type ReleaseUpdateInfo,
 } from './utils/appUpdate';
 import { useDeviceStatus } from './utils/deviceStatus';
+import {
+  clearGoogleAccessToken,
+  fetchGoogleCalendarEvents,
+  fetchGoogleTasks,
+  GoogleAuthExpiredError,
+  googleLogout,
+  googleSignIn,
+  initGoogleAuth,
+  type GoogleTaskItem,
+} from './utils/googleWorkspace';
 import { parseGoogleICalEvents } from './utils/icalParser';
 import { getTaiwanDayInfo } from './utils/taiwanCalendar';
 
@@ -279,8 +293,16 @@ export default function App() {
   const [aqi, setAqi] = useState<AqiPayload | null>(null);
 
   const [events, setEvents] = useState<CalendarEventItem[]>([]);
+  const [tasks, setTasks] = useState<GoogleTaskItem[]>([]);
   const [syncStatus, setSyncStatus] = useState<string>('每15分同步');
   const [calendarError, setCalendarError] = useState<string | null>(null);
+
+  // Google 帳號登入狀態（OAuth 存取憑證一律只存在記憶體中，絕不寫入 localStorage/sessionStorage）
+  const [googleUser, setGoogleUser] = useState<User | null>(null);
+  const [googleToken, setGoogleToken] = useState<string | null>(null);
+  const [needsGoogleAuth, setNeedsGoogleAuth] = useState<boolean>(true);
+  const [googleAuthLoading, setGoogleAuthLoading] = useState<boolean>(false);
+  const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
 
   // 設定彈窗草稿狀態
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
@@ -638,9 +660,103 @@ export default function App() {
     }
   }, [townPreset, cwaApiKey, strictApiKeyOnly]);
 
-  // 抓取並解析 Google 日曆 iCal（支援重複行程 RRULE、跨日行程與折行格式，僅使用本機設定之私人網址）
+  // 監聽 Firebase Google 登入狀態（登出或重整頁面後自動清除記憶體憑證並要求重新授權）
+  useEffect(() => {
+    const unsubscribe = initGoogleAuth(
+      (user, token) => {
+        setGoogleUser(user);
+        setGoogleToken(token);
+        setNeedsGoogleAuth(false);
+        setGoogleAuthError(null);
+      },
+      (signedInUserWithoutToken) => {
+        setGoogleUser(signedInUserWithoutToken);
+        setGoogleToken(null);
+        setNeedsGoogleAuth(true);
+      }
+    );
+    return unsubscribe;
+  }, []);
+
+  const handleGoogleSignIn = useCallback(async () => {
+    setGoogleAuthLoading(true);
+    setGoogleAuthError(null);
+    try {
+      const result = await googleSignIn();
+      setGoogleUser(result.user);
+      setGoogleToken(result.accessToken);
+      setNeedsGoogleAuth(false);
+      setCalendarError(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Google 登入失敗';
+      setGoogleAuthError(msg);
+      setCalendarError(msg);
+    } finally {
+      setGoogleAuthLoading(false);
+    }
+  }, []);
+
+  const handleGoogleLogout = useCallback(async () => {
+    setGoogleAuthLoading(true);
+    setGoogleAuthError(null);
+    try {
+      await googleLogout();
+      setGoogleUser(null);
+      setGoogleToken(null);
+      setNeedsGoogleAuth(true);
+      setTasks([]);
+      if (!icalUrl.trim()) {
+        setEvents([]);
+        setCalendarError(null);
+      }
+    } catch (err) {
+      setGoogleAuthError(err instanceof Error ? err.message : '登出失敗');
+    } finally {
+      setGoogleAuthLoading(false);
+    }
+  }, [icalUrl]);
+
+  // 抓取 Google 日曆活動與 Google 待辦工作（優先使用已登入之 Google 帳號，未登入時自動退回本機 .ics 網址）
   const fetchCalendar = useCallback(async () => {
     const syncCadenceMin = backlightEval.isExtremePowerSave ? 30 : 15;
+    const currentNow = new Date();
+    const startOfToday = new Date(
+      currentNow.getFullYear(),
+      currentNow.getMonth(),
+      currentNow.getDate()
+    );
+
+    if (googleToken) {
+      try {
+        const [googleEvents, googleTasks] = await Promise.all([
+          fetchGoogleCalendarEvents(googleToken, currentNow),
+          fetchGoogleTasks(googleToken, currentNow),
+        ]);
+        const upcomingCount = googleEvents.filter((ev) => ev.date >= startOfToday).length;
+        setEvents(googleEvents);
+        setTasks(googleTasks);
+        setCalendarError(null);
+        setSyncStatus(
+          `Google 已同步 ${String(currentNow.getHours()).padStart(2, '0')}:${String(currentNow.getMinutes()).padStart(2, '0')} · 活動${upcomingCount} · 待辦${googleTasks.length}`
+        );
+      } catch (err) {
+        if (err instanceof GoogleAuthExpiredError) {
+          clearGoogleAccessToken();
+          setGoogleToken(null);
+          setNeedsGoogleAuth(true);
+          setCalendarError(err.message);
+          setSyncStatus('請重新登入 Google');
+        } else {
+          const msg = err instanceof Error ? err.message : 'Google 日曆同步失敗';
+          setCalendarError(msg);
+          setSyncStatus('Google 同步異常');
+        }
+      }
+      return;
+    }
+
+    setTasks([]);
+
     if (!icalUrl.trim()) {
       setEvents([]);
       setCalendarError(null);
@@ -651,13 +767,7 @@ export default function App() {
     const standalone = isStandaloneApkRuntime();
     try {
       const text = await fetchIcalText(icalUrl, standalone);
-      const currentNow = new Date();
       const parsedEvents = parseGoogleICalEvents(text, currentNow);
-      const startOfToday = new Date(
-        currentNow.getFullYear(),
-        currentNow.getMonth(),
-        currentNow.getDate()
-      );
       const upcomingCount = parsedEvents.filter((ev) => ev.date >= startOfToday).length;
 
       setEvents(parsedEvents);
@@ -671,7 +781,7 @@ export default function App() {
       setCalendarError(msg);
       setSyncStatus('日曆同步異常');
     }
-  }, [icalUrl, backlightEval.isExtremePowerSave]);
+  }, [googleToken, icalUrl, backlightEval.isExtremePowerSave]);
 
   // 時鐘對齊整分鐘更新
   useEffect(() => {
@@ -1222,11 +1332,17 @@ export default function App() {
                 <CalendarPanel
                   today={now}
                   events={events}
+                  tasks={tasks}
                   hasIcalUrl={Boolean(icalUrl)}
+                  isGoogleConnected={Boolean(googleToken)}
+                  needsGoogleAuth={needsGoogleAuth}
+                  googleUserEmail={googleUser?.email ?? null}
+                  googleAuthLoading={googleAuthLoading}
                   syncStatus={syncStatus}
                   calendarError={calendarError}
                   isLandscape={isLandscape}
                   deviceScale="compact4"
+                  onGoogleSignIn={handleGoogleSignIn}
                   onOpenSettings={openSettings}
                 />
               </main>
@@ -1332,11 +1448,17 @@ export default function App() {
               <CalendarPanel
                 today={now}
                 events={events}
+                tasks={tasks}
                 hasIcalUrl={Boolean(icalUrl)}
+                isGoogleConnected={Boolean(googleToken)}
+                needsGoogleAuth={needsGoogleAuth}
+                googleUserEmail={googleUser?.email ?? null}
+                googleAuthLoading={googleAuthLoading}
                 syncStatus={syncStatus}
                 calendarError={calendarError}
                 isLandscape={true}
                 deviceScale={effectiveDeviceScale}
+                onGoogleSignIn={handleGoogleSignIn}
                 onOpenSettings={openSettings}
               />
             </div>
@@ -1384,11 +1506,17 @@ export default function App() {
               <CalendarPanel
                 today={now}
                 events={events}
+                tasks={tasks}
                 hasIcalUrl={Boolean(icalUrl)}
+                isGoogleConnected={Boolean(googleToken)}
+                needsGoogleAuth={needsGoogleAuth}
+                googleUserEmail={googleUser?.email ?? null}
+                googleAuthLoading={googleAuthLoading}
                 syncStatus={syncStatus}
                 calendarError={calendarError}
                 isLandscape={false}
                 deviceScale={effectiveDeviceScale}
+                onGoogleSignIn={handleGoogleSignIn}
                 onOpenSettings={openSettings}
               />
             </div>
@@ -1714,10 +1842,81 @@ export default function App() {
                 <span>嚴格 API Key 模式（未輸入個人金鑰時不自動改用免金鑰公開資料）</span>
               </label>
 
-              {/* Google 日曆 iCal URL */}
+              {/* Google 帳號直接登入（同步日曆活動＋Google 待辦工作） */}
+              <div className="flex flex-col gap-2 bg-[var(--surface-subtle)] border-[1.5px] border-[var(--border-color)] rounded-[8px] p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[length:calc(14px*var(--fs))] font-black flex items-center gap-1.5">
+                    <CheckSquare className="w-[1.05em] h-[1.05em] shrink-0" />
+                    Google 帳號同步（日曆活動＋待辦工作）
+                  </span>
+                  <span className="text-[length:calc(12px*var(--fs))] font-extrabold text-[var(--fg-muted)]">
+                    {googleToken ? '已連線（唯讀）' : '尚未登入'}
+                  </span>
+                </div>
+
+                {googleToken && googleUser ? (
+                  <div className="flex flex-col gap-2">
+                    <div className="text-[length:calc(13px*var(--fs))] font-bold leading-[1.45]">
+                      目前帳號：
+                      <span className="font-black">
+                        {googleUser.displayName ? `${googleUser.displayName}（${googleUser.email}）` : googleUser.email}
+                      </span>
+                    </div>
+                    <div className="text-[length:calc(12.5px*var(--fs))] font-semibold text-[var(--fg-muted)] font-num">
+                      狀態：{syncStatus}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={fetchCalendar}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[length:calc(13px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer whitespace-nowrap"
+                      >
+                        <RefreshCw className="w-[1em] h-[1em] shrink-0" />
+                        立即同步日曆與待辦
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleGoogleLogout}
+                        disabled={googleAuthLoading}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[length:calc(13px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer whitespace-nowrap disabled:opacity-50"
+                      >
+                        <LogOut className="w-[1em] h-[1em] shrink-0" />
+                        登出 Google 帳號
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[length:calc(12.5px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.5]">
+                      使用者直接登入自己的 Google 帳號，即可同時讀取「Google 日曆活動」與「Google Tasks 待辦工作」，無需手動貼上網址（僅要求唯讀權限，憑證僅暫存於記憶體）。
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <GoogleSignInButton
+                        onClick={handleGoogleSignIn}
+                        loading={googleAuthLoading}
+                        label="Sign in with Google"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {googleAuthError && (
+                  <p className="text-[length:calc(12.5px*var(--fs))] font-extrabold leading-[1.5] px-2.5 py-2 rounded-[6px] border border-[var(--border-color)] bg-[var(--bg-color)]">
+                    {googleAuthError}
+                  </p>
+                )}
+
+                {isStandaloneApkRuntime() && (
+                  <p className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.45]">
+                    提示：Android 獨立 APK 內嵌視窗若被 Google 安全政策阻擋彈出登入，建議改由電子紙瀏覽器開啟網頁版登入，或使用下方「iCal (.ics) 秘密網址」備用方案同步活動。
+                  </p>
+                )}
+              </div>
+
+              {/* 備用方案：Google 日曆 iCal URL */}
               <div className="flex flex-col gap-1.5">
                 <label htmlFor="ical-input" className="text-[length:calc(13.5px*var(--fs))] font-extrabold">
-                  Google 日曆「iCal 格式的秘密網址 (.ics)」：
+                  備用方案：Google 日曆「iCal 格式的秘密網址 (.ics)」：
                 </label>
                 <div className="flex flex-wrap sm:flex-nowrap gap-1.5">
                   <input
@@ -1757,7 +1956,7 @@ export default function App() {
                   </p>
                 )}
                 <p className="text-[length:calc(12px*var(--fs))] text-[var(--fg-muted)] leading-[1.5]">
-                  取得方式：電腦版 Google 日曆 → 左側日曆「設定和共用」→「整合日曆」→ 複製「iCal 格式的秘密網址」（結尾須為 basic.ics，非網頁嵌入連結）。支援每週／每月／每年重複行程與跨日行程。
+                  若未登入 Google 帳號，系統會自動改用此 .ics 秘密網址同步日曆活動（.ics 僅含日曆活動，不含待辦工作）。
                 </p>
               </div>
             </div>
