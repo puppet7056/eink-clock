@@ -247,24 +247,39 @@ interface CordovaInsomniaPlugin {
 }
 
 export function applyHardwareKeepAwake(shouldKeepAwake: boolean): 'applied' | 'unsupported' {
+  let applied = false;
+
+  // 優先透過原生 EInkOAuth 外掛直接設定 Android 視窗 FLAG_KEEP_SCREEN_ON（啟動與恢復前景也會自動續套）
+  try {
+    const bridge = getNativeRadioBridge();
+    if (bridge && typeof bridge.setKeepScreenOn === 'function') {
+      bridge.setKeepScreenOn(shouldKeepAwake);
+      applied = true;
+    }
+  } catch {
+    // 網頁環境或舊版外掛略過
+  }
+
+  // 同步呼叫 cordova-plugin-insomnia 作為雙重防休眠保險
   try {
     const w = window as unknown as {
       plugins?: { insomnia?: CordovaInsomniaPlugin };
     };
     const insomnia = w.plugins?.insomnia;
-    if (!insomnia) return 'unsupported';
-    if (shouldKeepAwake && typeof insomnia.keepAwake === 'function') {
-      insomnia.keepAwake();
-      return 'applied';
-    }
-    if (!shouldKeepAwake && typeof insomnia.allowSleepAgain === 'function') {
-      insomnia.allowSleepAgain();
-      return 'applied';
+    if (insomnia) {
+      if (shouldKeepAwake && typeof insomnia.keepAwake === 'function') {
+        insomnia.keepAwake();
+        applied = true;
+      } else if (!shouldKeepAwake && typeof insomnia.allowSleepAgain === 'function') {
+        insomnia.allowSleepAgain();
+        applied = true;
+      }
     }
   } catch {
-    // ignore on web or devices without insomnia plugin
+    // 網頁環境或無 insomnia 外掛時略過
   }
-  return 'unsupported';
+
+  return applied ? 'applied' : 'unsupported';
 }
 
 export type WirelessSettingsTarget = 'airplane' | 'wifi' | 'bluetooth';
@@ -281,6 +296,15 @@ export interface NightRadioResult {
 }
 
 interface NativeRadioBridge {
+  setKeepScreenOn?: (
+    keepOn: boolean,
+    onSuccess?: () => void,
+    onError?: (err: unknown) => void
+  ) => void;
+  listenTimeTick?: (
+    onTick?: (timestampMillis: number) => void,
+    onError?: (err: unknown) => void
+  ) => void;
   setNightRadioMode?: (
     enterNightMode: boolean,
     onSuccess?: (res: {
@@ -307,6 +331,35 @@ function getNativeRadioBridge(): NativeRadioBridge | null {
   } catch {
     return null;
   }
+}
+
+export function subscribeNativeTimeTick(onTick: () => void): () => void {
+  let active = true;
+  let bound = false;
+
+  const tryBind = () => {
+    if (!active || bound) return;
+    const bridge = getNativeRadioBridge();
+    if (!bridge || typeof bridge.listenTimeTick !== 'function') return;
+    bound = true;
+    try {
+      bridge.listenTimeTick(() => {
+        if (active) onTick();
+      });
+    } catch {
+      bound = false;
+    }
+  };
+
+  tryBind();
+  document.addEventListener('deviceready', tryBind, false);
+  window.addEventListener('eink-cordova-ready', tryBind);
+
+  return () => {
+    active = false;
+    document.removeEventListener('deviceready', tryBind, false);
+    window.removeEventListener('eink-cordova-ready', tryBind);
+  };
 }
 
 export function formatNightRadioSummary(res: NightRadioResult): string {

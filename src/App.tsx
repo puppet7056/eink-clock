@@ -91,6 +91,7 @@ import {
   openNativeWirelessSettings,
   savePowerSettings,
   shouldTriggerGhostCleanAt,
+  subscribeNativeTimeTick,
   type GhostCleanIntervalMinutes,
   type NightRadioResult,
   type PowerSettings,
@@ -435,14 +436,32 @@ export default function App() {
     }
   }, [powerEval.shouldDisableNightRadios]);
 
-  // 監聽 Cordova deviceready / resume 以確保喚醒後立即套用背光與防休眠狀態
+  // 監聽 Cordova deviceready（具黏性特性，即使早於 React 掛載仍會立即補觸發）、resume 與前景恢復事件，確保背光與常亮鎖確實套用
   useEffect(() => {
-    const handleCordovaReady = () => {
+    const applyAllHardwareStates = () => {
       applyHardwareBacklight(effectiveBrightnessValue);
       applyHardwareKeepAwake(powerEval.shouldKeepAwake);
     };
-    window.addEventListener('eink-cordova-ready', handleCordovaReady);
-    return () => window.removeEventListener('eink-cordova-ready', handleCordovaReady);
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        applyAllHardwareStates();
+      }
+    };
+
+    if ((window as unknown as { __einkCordovaReady?: boolean }).__einkCordovaReady) {
+      applyAllHardwareStates();
+    }
+
+    window.addEventListener('eink-cordova-ready', applyAllHardwareStates);
+    document.addEventListener('deviceready', applyAllHardwareStates, false);
+    document.addEventListener('resume', applyAllHardwareStates, false);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('eink-cordova-ready', applyAllHardwareStates);
+      document.removeEventListener('deviceready', applyAllHardwareStates, false);
+      document.removeEventListener('resume', applyAllHardwareStates, false);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [effectiveBrightnessValue, powerEval.shouldKeepAwake]);
 
   // 監聽視窗尺寸變化
@@ -955,7 +974,37 @@ export default function App() {
 
   useEffect(() => {
     let timerId: number | undefined;
+    let backupIntervalId: number | undefined;
     let cancelled = false;
+    let lastBucketKey = '';
+
+    const computeBucketKey = (date: Date, fiveMinMode: boolean): string => {
+      const minuteBucket = fiveMinMode ? Math.floor(date.getMinutes() / 5) * 5 : date.getMinutes();
+      return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}-${date.getHours()}:${minuteBucket}`;
+    };
+
+    const syncClockIfChanged = (allowGhostClean: boolean) => {
+      if (cancelled) return;
+      const current = new Date();
+      const evaluated = evaluatePowerState(
+        powerSettingsRef.current,
+        current,
+        nightOverridesRef.current
+      );
+      const nextBucket = computeBucketKey(current, evaluated.isFiveMinuteClockActive);
+      if (nextBucket === lastBucketKey) return;
+
+      lastBucketKey = nextBucket;
+      setNow(current);
+
+      if (
+        allowGhostClean &&
+        !document.hidden &&
+        shouldTriggerGhostCleanAt(current, evaluated.effectiveGhostCleanMinutes)
+      ) {
+        forceFullRefresh();
+      }
+    };
 
     const scheduleNext = () => {
       if (cancelled) return;
@@ -965,39 +1014,44 @@ export default function App() {
         current,
         nightOverridesRef.current
       );
-      let delayMs: number;
+
+      // 精準對齊到下一個整點後 +250 毫秒，避免計時器早醒幾毫秒讀到舊分鐘並跳過整分鐘
+      let msToBoundary: number;
       if (evaluated.isFiveMinuteClockActive) {
         const minsUntilNext5 = 5 - (current.getMinutes() % 5);
-        delayMs = (minsUntilNext5 * 60 - current.getSeconds()) * 1000 - current.getMilliseconds();
+        msToBoundary =
+          (minsUntilNext5 * 60 - current.getSeconds()) * 1000 - current.getMilliseconds();
       } else {
-        delayMs = (60 - current.getSeconds()) * 1000 - current.getMilliseconds();
+        msToBoundary = (60 - current.getSeconds()) * 1000 - current.getMilliseconds();
       }
-      if (delayMs < 1000) {
-        delayMs += evaluated.isFiveMinuteClockActive ? 5 * 60 * 1000 : 60 * 1000;
-      }
+      const delayMs = Math.max(300, msToBoundary + 250);
+
       timerId = window.setTimeout(() => {
-        const nextNow = new Date();
-        setNow(nextNow);
-        if (!document.hidden) {
-          const nextEval = evaluatePowerState(
-            powerSettingsRef.current,
-            nextNow,
-            nightOverridesRef.current
-          );
-          if (shouldTriggerGhostCleanAt(nextNow, nextEval.effectiveGhostCleanMinutes)) {
-            forceFullRefresh();
-          }
-        }
+        syncClockIfChanged(true);
         scheduleNext();
       }, delayMs);
     };
 
-    setNow(new Date());
+    // 立即同步初始時間（不觸發全刷）
+    syncClockIfChanged(false);
     scheduleNext();
+
+    // 低耗電保底檢核：僅在顯示分鐘真的變動時才觸發畫面更新，防止 WebView 節流漏跳
+    const backupIntervalMs = powerEval.isFiveMinuteClockActive ? 60 * 1000 : 15 * 1000;
+    backupIntervalId = window.setInterval(() => {
+      syncClockIfChanged(true);
+    }, backupIntervalMs);
+
+    // 訂閱 Android 原生系統 ACTION_TIME_TICK 每分鐘整點推播（與系統狀態列時鐘同步）
+    const unsubscribeNativeTick = subscribeNativeTimeTick(() => {
+      syncClockIfChanged(true);
+    });
 
     return () => {
       cancelled = true;
       if (timerId !== undefined) window.clearTimeout(timerId);
+      if (backupIntervalId !== undefined) window.clearInterval(backupIntervalId);
+      unsubscribeNativeTick();
     };
   }, [forceFullRefresh, powerEval.isFiveMinuteClockActive]);
 

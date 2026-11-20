@@ -3,8 +3,10 @@ package tw.eink.clockdashboard;
 import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -14,6 +16,7 @@ import android.provider.Settings;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
+import android.view.WindowManager;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import javax.crypto.Cipher;
@@ -30,10 +33,12 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * Lightweight native Android bridge for Cordova Android 13+ (API 34):
- * - OAuth 2.0 system-browser sign-in & custom URI scheme deep-link callback (no GMS required).
- * - Android Keystore AES-256-GCM encrypted refresh_token persistence across APK updates/reboots.
- * - Night-mode best-effort radio controller (Bluetooth / Wi-Fi / Airplane Mode + quick settings).
+ * 電子紙時鐘原生 Android 橋接外掛（支援 Cordova Android 13+ / API 34）：
+ * - 系統瀏覽器 OAuth 2.0 PKCE 登入與自訂網址協定回呼（不依賴 GMS）
+ * - Android Keystore AES-256-GCM 加密保存 refresh_token，更新 APK 免重登
+ * - 原生視窗 FLAG_KEEP_SCREEN_ON 常亮控制（啟動與恢復前景時立即生效，避免被系統預設休眠覆蓋）
+ * - 系統級 ACTION_TIME_TICK 每分鐘整點推送，防止電子紙 WebView 節流計時器造成時鐘停住
+ * - 夜間模式無線開關控制（藍牙／Wi-Fi／飛航模式與系統快捷頁開啟）
  */
 public class EInkOAuthPlugin extends CordovaPlugin {
     private static final String KEYSTORE_PROVIDER = "AndroidKeyStore";
@@ -51,18 +56,56 @@ public class EInkOAuthPlugin extends CordovaPlugin {
     private static final String PREF_WIFI_DISABLED_BY_APP = "wifi_disabled_by_app";
     private static final String PREF_BT_DISABLED_BY_APP = "bt_disabled_by_app";
     private static final String PREF_AIRPLANE_ENABLED_BY_APP = "airplane_enabled_by_app";
+    private static final String PREF_KEEP_SCREEN_ON = "keep_screen_on";
     private static final int REQ_BLUETOOTH_CONNECT = 4401;
 
     private CallbackContext listenerCallbackContext = null;
+    private CallbackContext timeTickCallbackContext = null;
     private String pendingCallbackUrl = null;
+    private BroadcastReceiver timeTickReceiver = null;
+    private boolean timeTickRegistered = false;
 
     @Override
     public void initialize(CordovaInterface cordova, CordovaWebView webView) {
         super.initialize(cordova, webView);
         Activity activity = cordova.getActivity();
         if (activity != null) {
+            boolean savedKeepOn = getRadioPrefs().getBoolean(PREF_KEEP_SCREEN_ON, true);
+            applyKeepScreenOnFlag(activity, savedKeepOn);
+            registerTimeTickReceiver(activity);
             handlePossibleOAuthIntent(activity.getIntent());
         }
+    }
+
+    @Override
+    public void onResume(boolean multitasking) {
+        super.onResume(multitasking);
+        Activity activity = cordova != null ? cordova.getActivity() : null;
+        if (activity != null) {
+            boolean savedKeepOn = getRadioPrefs().getBoolean(PREF_KEEP_SCREEN_ON, true);
+            applyKeepScreenOnFlag(activity, savedKeepOn);
+            registerTimeTickReceiver(activity);
+            // 回到前景時主動通知前端校正時間一次
+            deliverTimeTick();
+        }
+    }
+
+    @Override
+    public void onPause(boolean multitasking) {
+        super.onPause(multitasking);
+        Activity activity = cordova != null ? cordova.getActivity() : null;
+        if (activity != null) {
+            unregisterTimeTickReceiver(activity);
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        Activity activity = cordova != null ? cordova.getActivity() : null;
+        if (activity != null) {
+            unregisterTimeTickReceiver(activity);
+        }
+        super.onDestroy();
     }
 
     @Override
@@ -72,6 +115,68 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             cordova.getActivity().setIntent(intent);
         }
         handlePossibleOAuthIntent(intent);
+    }
+
+    private void applyKeepScreenOnFlag(Activity activity, boolean keepOn) {
+        if (activity == null) return;
+        activity.runOnUiThread(() -> {
+            try {
+                if (keepOn) {
+                    activity.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                } else {
+                    activity.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                }
+            } catch (Exception ignored) {
+                // 忽略個別機型視窗旗標限制
+            }
+        });
+    }
+
+    private void registerTimeTickReceiver(Activity activity) {
+        if (activity == null || timeTickRegistered) return;
+        try {
+            if (timeTickReceiver == null) {
+                timeTickReceiver = new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        if (intent != null && Intent.ACTION_TIME_TICK.equals(intent.getAction())) {
+                            deliverTimeTick();
+                        }
+                    }
+                };
+            }
+            IntentFilter filter = new IntentFilter(Intent.ACTION_TIME_TICK);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                activity.registerReceiver(timeTickReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                activity.registerReceiver(timeTickReceiver, filter);
+            }
+            timeTickRegistered = true;
+        } catch (Exception ignored) {
+            timeTickRegistered = false;
+        }
+    }
+
+    private void unregisterTimeTickReceiver(Activity activity) {
+        if (activity == null || !timeTickRegistered || timeTickReceiver == null) return;
+        try {
+            activity.unregisterReceiver(timeTickReceiver);
+        } catch (Exception ignored) {
+            // 若系統已註銷則安全略過
+        } finally {
+            timeTickRegistered = false;
+        }
+    }
+
+    private void deliverTimeTick() {
+        if (timeTickCallbackContext == null) return;
+        try {
+            PluginResult result = new PluginResult(PluginResult.Status.OK, System.currentTimeMillis());
+            result.setKeepCallback(true);
+            timeTickCallbackContext.sendPluginResult(result);
+        } catch (Exception ignored) {
+            // 忽略 WebView 尚未就緒或已銷毀時的回呼錯誤
+        }
     }
 
     private boolean isOAuthCallbackUri(Uri uri) {
@@ -241,7 +346,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
         String bluetoothStatus = "unchanged";
         boolean needsManualShortcut = false;
 
-        // 1. Airplane Mode (only writable if WRITE_SECURE_SETTINGS was granted via ADB / system privilege)
+        // 1. 飛航模式（僅於已透過 ADB 授予 WRITE_SECURE_SETTINGS 權限時可直接切換）
         boolean hasSecureSettings = false;
         try {
             hasSecureSettings = appCtx.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS")
@@ -263,7 +368,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
                         apIntent.putExtra("state", true);
                         appCtx.sendBroadcast(apIntent);
                     } catch (Exception ignored) {
-                        // Protected broadcast on newer Android; setting value still updated
+                        // 新版 Android 保護廣播，設定值本身仍已更新
                     }
                     editor.putBoolean(PREF_AIRPLANE_ENABLED_BY_APP, true);
                     airplaneStatus = "enabled";
@@ -285,7 +390,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
                         apIntent.putExtra("state", false);
                         appCtx.sendBroadcast(apIntent);
                     } catch (Exception ignored) {
-                        // ignore
+                        // 安全略過
                     }
                     airplaneStatus = "restored";
                 } catch (Exception ignored) {
@@ -296,7 +401,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             }
         }
 
-        // 2. Wi-Fi (Android <= 9 or permissive ROMs support setWifiEnabled; Android 10+ targetSdk>=29 restricts it)
+        // 2. Wi-Fi（Android 9 以下可直接切換；Android 10 以上受系統限制）
         try {
             WifiManager wifiManager = (WifiManager) appCtx.getSystemService(Context.WIFI_SERVICE);
             if (wifiManager == null) {
@@ -324,7 +429,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             if (enterNightMode) needsManualShortcut = true;
         }
 
-        // 3. Bluetooth (works on Android 7-12 with BLUETOOTH_CONNECT on API 31-32; restricted on API 33+)
+        // 3. 藍牙（Android 7～12 可於授權後直接開關；Android 13 以上受系統限制）
         try {
             BluetoothAdapter btAdapter = getBluetoothAdapter(appCtx);
             if (btAdapter == null) {
@@ -339,7 +444,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
                                 "android.permission.BLUETOOTH_CONNECT"
                         );
                     } catch (Exception ignored) {
-                        // ignore
+                        // 安全略過
                     }
                     needsManualShortcut = true;
                 }
@@ -383,7 +488,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
 
     private void openWirelessSettings(Activity activity, String target) {
         if (activity == null) return;
-        Intent intent = null;
+        Intent intent;
 
         if ("wifi".equals(target)) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -402,7 +507,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             activity.startActivity(intent);
             return;
         } catch (Exception ignored) {
-            // Fall back to generic wireless settings
+            // 若機型不支援特定設定頁則退回無線與網路設定
         }
 
         Intent fallback = new Intent(Settings.ACTION_WIRELESS_SETTINGS);
@@ -504,6 +609,30 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             } catch (Exception e) {
                 callbackContext.error("Failed to clear refresh token: " + e.getMessage());
             }
+            return true;
+        }
+
+        if ("setKeepScreenOn".equals(action)) {
+            boolean keepOn = args.optBoolean(0, true);
+            try {
+                getRadioPrefs().edit().putBoolean(PREF_KEEP_SCREEN_ON, keepOn).apply();
+                applyKeepScreenOnFlag(cordova.getActivity(), keepOn);
+                callbackContext.success();
+            } catch (Exception e) {
+                callbackContext.error("Failed to update keep screen on: " + e.getMessage());
+            }
+            return true;
+        }
+
+        if ("listenTimeTick".equals(action)) {
+            timeTickCallbackContext = callbackContext;
+            Activity activity = cordova.getActivity();
+            if (activity != null) {
+                registerTimeTickReceiver(activity);
+            }
+            PluginResult noop = new PluginResult(PluginResult.Status.NO_RESULT);
+            noop.setKeepCallback(true);
+            callbackContext.sendPluginResult(noop);
             return true;
         }
 

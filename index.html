@@ -154,6 +154,7 @@
     <script>
       (function () {
         function enableEinkDisplayMode() {
+          window.__einkCordovaReady = true;
           try {
             if (window.AndroidFullScreen && typeof window.AndroidFullScreen.immersiveMode === 'function') {
               window.AndroidFullScreen.immersiveMode();

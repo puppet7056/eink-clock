@@ -27,6 +27,14 @@ var EInkOAuth = {
   clearRefreshToken: function (onSuccess, onError) {
     exec(onSuccess || function () {}, onError || function () {}, 'EInkOAuth', 'clearRefreshToken', []);
   },
+  setKeepScreenOn: function (keepOn, onSuccess, onError) {
+    exec(onSuccess || function () {}, onError || function () {}, 'EInkOAuth', 'setKeepScreenOn', [
+      Boolean(keepOn),
+    ]);
+  },
+  listenTimeTick: function (onTick, onError) {
+    exec(onTick || function () {}, onError || function () {}, 'EInkOAuth', 'listenTimeTick', []);
+  },
   setNightRadioMode: function (enterNightMode, onSuccess, onError) {
     exec(onSuccess || function () {}, onError || function () {}, 'EInkOAuth', 'setNightRadioMode', [
       Boolean(enterNightMode),
