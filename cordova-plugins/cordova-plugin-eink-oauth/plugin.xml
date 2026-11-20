@@ -2,9 +2,9 @@
 <plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
         xmlns:android="http://schemas.android.com/apk/res/android"
         id="cordova-plugin-eink-oauth"
-        version="1.2.0">
+        version="1.3.0">
   <name>EInkOAuth</name>
-  <description>Native Android system-browser OAuth 2.0 PKCE, Keystore token persistence, and AlarmManager deep-sleep auto-wake plugin for E-Ink Clock Dashboard</description>
+  <description>Native Android system-browser OAuth 2.0 PKCE, Keystore token persistence, and night-mode wireless power control for E-Ink Clock Dashboard</description>
   <license>MIT</license>
 
   <preference name="URL_SCHEME" default="tw.eink.clockdashboard.oauth" />
@@ -22,13 +22,12 @@
     </config-file>
 
     <config-file target="AndroidManifest.xml" parent="/manifest">
-      <uses-permission android:name="android.permission.WAKE_LOCK" />
-      <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-      <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
-      <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
-      <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
-      <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-      <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+      <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+      <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+      <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+      <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+      <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+      <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
     </config-file>
 
     <config-file target="AndroidManifest.xml" parent="/manifest/application/activity[@android:name='MainActivity']">
@@ -40,32 +39,6 @@
       </intent-filter>
     </config-file>
 
-    <config-file target="AndroidManifest.xml" parent="/manifest/application">
-      <activity
-        android:name="tw.eink.clockdashboard.EInkWakeActivity"
-        android:exported="false"
-        android:excludeFromRecents="true"
-        android:launchMode="singleInstance"
-        android:taskAffinity=""
-        android:showWhenLocked="true"
-        android:showOnLockScreen="true"
-        android:turnScreenOn="true"
-        android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen" />
-
-      <receiver
-        android:name="tw.eink.clockdashboard.EInkWakeReceiver"
-        android:enabled="true"
-        android:exported="true">
-        <intent-filter>
-          <action android:name="tw.eink.clockdashboard.ACTION_AUTO_WAKE" />
-          <action android:name="android.intent.action.BOOT_COMPLETED" />
-          <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-        </intent-filter>
-      </receiver>
-    </config-file>
-
     <source-file src="src/android/EInkOAuthPlugin.java" target-dir="src/tw/eink/clockdashboard" />
-    <source-file src="src/android/EInkWakeReceiver.java" target-dir="src/tw/eink/clockdashboard" />
-    <source-file src="src/android/EInkWakeActivity.java" target-dir="src/tw/eink/clockdashboard" />
   </platform>
 </plugin>

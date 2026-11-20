@@ -20,6 +20,7 @@ import {
   LogOut,
   Monitor,
   Moon,
+  Plane,
   Power,
   RefreshCw,
   Settings,
@@ -83,21 +84,17 @@ import {
 import { parseGoogleICalEvents } from './utils/icalParser';
 import {
   applyHardwareKeepAwake,
+  applyNativeNightRadioMode,
   evaluatePowerState,
-  fetchNativeWakeDiagnostics,
-  formatWakeDiagnosticSummary,
   loadPowerSettings,
   MAX_BATTERY_POWER_PRESET,
-  openNativeWakePermissionSettings,
+  openNativeWirelessSettings,
   savePowerSettings,
-  scheduleNativeTestWake,
   shouldTriggerGhostCleanAt,
-  syncNativeMorningWakeSchedule,
   type GhostCleanIntervalMinutes,
-  type NativeWakeDiagnostics,
+  type NightRadioResult,
   type PowerSettings,
   type SyncIntervalMinutes,
-  type WakePermissionTarget,
 } from './utils/powerSettings';
 import { getTaiwanDayInfo } from './utils/taiwanCalendar';
 
@@ -345,11 +342,9 @@ export default function App() {
   const [draftStrictKey, setDraftStrictKey] = useState<boolean>(false);
   const [draftBacklight, setDraftBacklight] = useState<BacklightSettings>(backlight);
   const [draftPowerSettings, setDraftPowerSettings] = useState<PowerSettings>(powerSettings);
-  const [testWakeState, setTestWakeState] = useState<{
-    status: 'idle' | 'loading' | 'scheduled' | 'error';
-    message: string;
-  }>({ status: 'idle', message: '' });
-  const [wakeDiag, setWakeDiag] = useState<NativeWakeDiagnostics | null>(null);
+  const [manualNightExitKey, setManualNightExitKey] = useState<string | null>(null);
+  const [manualNightForceActive, setManualNightForceActive] = useState<boolean>(false);
+  const [nightRadioResult, setNightRadioResult] = useState<NightRadioResult | null>(null);
   const [draftGithubRepo, setDraftGithubRepo] = useState<string>(githubRepo);
   const [updateCheckState, setUpdateCheckState] = useState<{
     status: 'idle' | 'loading' | 'result' | 'error';
@@ -401,41 +396,54 @@ export default function App() {
     [backlight, now, weather?.today.sunrise, weather?.today.sunset]
   );
 
-  // 計算當下進階省電與休眠排程狀態（常亮鎖 / 夜間自動休眠 / 同步與全刷週期 / 純離線模式）
+  // 計算當下進階省電與夜間休眠排程狀態（常亮鎖 / 夜間休眠與手動退出 / 背光0% / 5分一跳 / 飛航無線 / 同步與全刷週期）
   const powerEval = useMemo(
-    () => evaluatePowerState(powerSettings, now),
-    [powerSettings, now]
+    () =>
+      evaluatePowerState(powerSettings, now, {
+        manualNightExitKey,
+        manualNightForceActive,
+      }),
+    [powerSettings, now, manualNightExitKey, manualNightForceActive]
   );
+
+  // 夜間模式啟用強制背光 0% 時，覆寫一般背光輸出直到退出夜間模式
+  const effectiveBrightnessValue = powerEval.forceZeroBacklight ? 0 : backlightEval.brightnessValue;
+  const effectiveBacklightShortLabel = powerEval.forceZeroBacklight
+    ? '背光0%(夜)'
+    : backlightEval.shortLabel;
 
   // 套用硬體背光（Cordova Android 支援前光機型自動控制，無前光機型與瀏覽器安全略過）
   useEffect(() => {
-    applyHardwareBacklight(backlightEval.brightnessValue);
-  }, [backlightEval.brightnessValue]);
+    applyHardwareBacklight(effectiveBrightnessValue);
+  }, [effectiveBrightnessValue]);
 
-  // 動態控制防休眠鎖（夜間自動休眠時段或使用者關閉常亮時自動呼叫 allowSleepAgain 釋放 WakeLock）
+  // 動態控制防休眠鎖（夜間休眠時段或使用者關閉常亮時自動呼叫 allowSleepAgain 釋放 WakeLock，早上自行喚醒）
   useEffect(() => {
     applyHardwareKeepAwake(powerEval.shouldKeepAwake);
   }, [powerEval.shouldKeepAwake]);
 
-  // 同步 Android 原生每日早上自動喚醒排程（AlarmManager.setAlarmClock，從深度休眠喚醒螢幕）
+  // 進入／退出夜間模式時，自動嘗試開啟飛航模式並關閉 Wi-Fi 與藍牙（退出夜間模式時還原由本程式關閉之無線開關）
+  const prevNightRadioActiveRef = useRef<boolean>(false);
   useEffect(() => {
-    void syncNativeMorningWakeSchedule(powerSettings);
-  }, [
-    powerSettings.nightSleepEnabled,
-    powerSettings.nightSleepAutoWake,
-    powerSettings.nightSleepEndHour,
-  ]);
+    const shouldDisable = powerEval.shouldDisableNightRadios;
+    if (shouldDisable && !prevNightRadioActiveRef.current) {
+      prevNightRadioActiveRef.current = true;
+      void applyNativeNightRadioMode(true).then((res) => setNightRadioResult(res));
+    } else if (!shouldDisable && prevNightRadioActiveRef.current) {
+      prevNightRadioActiveRef.current = false;
+      void applyNativeNightRadioMode(false).then(() => setNightRadioResult(null));
+    }
+  }, [powerEval.shouldDisableNightRadios]);
 
-  // 監聽 Cordova deviceready / resume 以確保喚醒後立即套用背光、防休眠狀態與早上喚醒排程
+  // 監聽 Cordova deviceready / resume 以確保喚醒後立即套用背光與防休眠狀態
   useEffect(() => {
     const handleCordovaReady = () => {
-      applyHardwareBacklight(backlightEval.brightnessValue);
+      applyHardwareBacklight(effectiveBrightnessValue);
       applyHardwareKeepAwake(powerEval.shouldKeepAwake);
-      void syncNativeMorningWakeSchedule(powerSettings);
     };
     window.addEventListener('eink-cordova-ready', handleCordovaReady);
     return () => window.removeEventListener('eink-cordova-ready', handleCordovaReady);
-  }, [backlightEval.brightnessValue, powerEval.shouldKeepAwake, powerSettings]);
+  }, [effectiveBrightnessValue, powerEval.shouldKeepAwake]);
 
   // 監聽視窗尺寸變化
   useEffect(() => {
@@ -930,36 +938,68 @@ export default function App() {
     }
   }, [googleToken, googleUser?.authMode, icalUrl, powerEval.effectiveSyncMinutes]);
 
-  // 時鐘對齊整分鐘更新，並依使用者設定頻率執行清殘影全刷（夜間休眠／背景隱藏時不閃屏）
+  // 時鐘更新排程：一般模式對齊每 1 分鐘整點；夜間模式開啟 5 分鐘一跳時對齊每 5 分鐘整點並取消夜間全刷清殘影
   const powerSettingsRef = useRef<PowerSettings>(powerSettings);
+  const nightOverridesRef = useRef<{
+    manualNightExitKey: string | null;
+    manualNightForceActive: boolean;
+  }>({ manualNightExitKey, manualNightForceActive });
+
   useEffect(() => {
     powerSettingsRef.current = powerSettings;
   }, [powerSettings]);
 
   useEffect(() => {
-    const tick = (allowClean: boolean) => {
+    nightOverridesRef.current = { manualNightExitKey, manualNightForceActive };
+  }, [manualNightExitKey, manualNightForceActive]);
+
+  useEffect(() => {
+    let timerId: number | undefined;
+    let cancelled = false;
+
+    const scheduleNext = () => {
+      if (cancelled) return;
       const current = new Date();
-      setNow(current);
-      if (!allowClean || document.hidden) return;
-      const evaluated = evaluatePowerState(powerSettingsRef.current, current);
-      if (shouldTriggerGhostCleanAt(current, evaluated.effectiveGhostCleanMinutes)) {
-        forceFullRefresh();
+      const evaluated = evaluatePowerState(
+        powerSettingsRef.current,
+        current,
+        nightOverridesRef.current
+      );
+      let delayMs: number;
+      if (evaluated.isFiveMinuteClockActive) {
+        const minsUntilNext5 = 5 - (current.getMinutes() % 5);
+        delayMs = (minsUntilNext5 * 60 - current.getSeconds()) * 1000 - current.getMilliseconds();
+      } else {
+        delayMs = (60 - current.getSeconds()) * 1000 - current.getMilliseconds();
       }
+      if (delayMs < 1000) {
+        delayMs += evaluated.isFiveMinuteClockActive ? 5 * 60 * 1000 : 60 * 1000;
+      }
+      timerId = window.setTimeout(() => {
+        const nextNow = new Date();
+        setNow(nextNow);
+        if (!document.hidden) {
+          const nextEval = evaluatePowerState(
+            powerSettingsRef.current,
+            nextNow,
+            nightOverridesRef.current
+          );
+          if (shouldTriggerGhostCleanAt(nextNow, nextEval.effectiveGhostCleanMinutes)) {
+            forceFullRefresh();
+          }
+        }
+        scheduleNext();
+      }, delayMs);
     };
 
-    tick(false);
-    let minuteInterval: number | undefined;
-    const msToNextMinute = (60 - new Date().getSeconds()) * 1000;
-    const alignTimeout = window.setTimeout(() => {
-      tick(true);
-      minuteInterval = window.setInterval(() => tick(true), 60 * 1000);
-    }, msToNextMinute);
+    setNow(new Date());
+    scheduleNext();
 
     return () => {
-      window.clearTimeout(alignTimeout);
-      if (minuteInterval !== undefined) window.clearInterval(minuteInterval);
+      cancelled = true;
+      if (timerId !== undefined) window.clearTimeout(timerId);
     };
-  }, [forceFullRefresh]);
+  }, [forceFullRefresh, powerEval.isFiveMinuteClockActive]);
 
   // 天氣與日曆排程更新（支援自訂 15/30/60/120 分鐘、僅手動、夜間休眠暫停與純離線模式）
   useEffect(() => {
@@ -1053,8 +1093,6 @@ export default function App() {
     setDraftStrictKey(strictApiKeyOnly);
     setDraftBacklight(backlight);
     setDraftPowerSettings(powerSettings);
-    setTestWakeState({ status: 'idle', message: '' });
-    void fetchNativeWakeDiagnostics().then((diag) => setWakeDiag(diag));
     setDraftGithubRepo(githubRepo);
     setUpdateCheckState({ status: 'idle' });
     setShowCwaKey(false);
@@ -1073,48 +1111,20 @@ export default function App() {
     githubRepo,
   ]);
 
-  // 設定頁開啟期間，若從系統權限頁或休眠喚醒回來，自動刷新喚醒權限與上次測試診斷
-  useEffect(() => {
-    if (!isSettingsOpen) return;
-    const refreshDiag = () => {
-      if (document.hidden) return;
-      void fetchNativeWakeDiagnostics().then((diag) => setWakeDiag(diag));
-    };
-    document.addEventListener('visibilitychange', refreshDiag);
-    window.addEventListener('eink-cordova-ready', refreshDiag);
-    return () => {
-      document.removeEventListener('visibilitychange', refreshDiag);
-      window.removeEventListener('eink-cordova-ready', refreshDiag);
-    };
-  }, [isSettingsOpen]);
-
-  const handleOpenWakePermission = async (target: WakePermissionTarget) => {
-    await openNativeWakePermissionSettings(target);
-  };
-
-  const handleRefreshWakeDiag = async () => {
-    const diag = await fetchNativeWakeDiagnostics();
-    setWakeDiag(diag);
-  };
-
-  const handleScheduleTestWake = async () => {
-    setTestWakeState({ status: 'loading', message: '正在向 Android 系統預約 60 秒後自動喚醒...' });
-    const result = await scheduleNativeTestWake(60);
-    if (result.status === 'scheduled') {
-      setTestWakeState({
-        status: 'scheduled',
-        message:
-          result.message ||
-          '已預約 60 秒後自動喚醒，請立即按電源鍵讓閱讀器進入休眠並靜候測試。',
-      });
-      void fetchNativeWakeDiagnostics().then((diag) => setWakeDiag(diag));
-    } else {
-      setTestWakeState({
-        status: 'error',
-        message: result.message || '無法預約自動喚醒，請確認是否為最新版 Android APK。',
-      });
+  const handleExitNightMode = useCallback(() => {
+    setManualNightForceActive(false);
+    if (powerEval.scheduledWindowKey) {
+      setManualNightExitKey(powerEval.scheduledWindowKey);
     }
-  };
+    setNow(new Date());
+  }, [powerEval.scheduledWindowKey]);
+
+  const handleEnterNightModeManually = useCallback(() => {
+    setManualNightExitKey(null);
+    setManualNightForceActive(true);
+    setNow(new Date());
+    setIsSettingsOpen(false);
+  }, []);
 
   const handleCheckAppUpdate = async () => {
     const repoInput = draftGithubRepo.trim() || DEFAULT_GITHUB_REPO;
@@ -1206,6 +1216,14 @@ export default function App() {
     saveBacklightSettings(draftBacklight);
     savePowerSettings(draftPowerSettings);
 
+    if (
+      !draftPowerSettings.nightSleepEnabled ||
+      draftPowerSettings.nightSleepStartHour !== powerSettings.nightSleepStartHour ||
+      draftPowerSettings.nightSleepEndHour !== powerSettings.nightSleepEndHour
+    ) {
+      setManualNightExitKey(null);
+    }
+
     setIcalTestState({ status: 'idle', message: '' });
     setIsSettingsOpen(false);
   };
@@ -1234,7 +1252,10 @@ export default function App() {
     [todayKey]
   );
   const todayInfo = useMemo(() => getTaiwanDayInfo(todayDate), [todayDate]);
-  const timeDisplay = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const displayedMinute = powerEval.isFiveMinuteClockActive
+    ? Math.floor(now.getMinutes() / 5) * 5
+    : now.getMinutes();
+  const timeDisplay = `${String(now.getHours()).padStart(2, '0')}:${String(displayedMinute).padStart(2, '0')}`;
   const dateDisplay = isCompact4
     ? `${todayInfo.month}/${todayInfo.day}（${todayInfo.weekdayLabel}）`
     : `${todayInfo.year}/${todayInfo.month}/${todayInfo.day}（${todayInfo.weekdayLabel}）`;
@@ -1495,14 +1516,18 @@ export default function App() {
               type="button"
               onClick={cycleBacklightMode}
               className={btnClass}
-              title={backlightEval.detailLabel}
+              title={
+                powerEval.forceZeroBacklight
+                  ? '夜間模式強制背光 0%（退出夜間模式後自動恢復）'
+                  : backlightEval.detailLabel
+              }
             >
-              {backlight.mode === 'off' ? (
+              {powerEval.forceZeroBacklight || backlight.mode === 'off' ? (
                 <LightbulbOff className="w-3.5 h-3.5" />
               ) : (
                 <SunDim className="w-3.5 h-3.5" />
               )}
-              {!hideHeaderLabels && backlightEval.shortLabel}
+              {!hideHeaderLabels && effectiveBacklightShortLabel}
             </button>
 
             <button type="button" onClick={forceFullRefresh} className={btnClass} title="防殘影刷新">
@@ -1519,6 +1544,53 @@ export default function App() {
             </button>
           </div>
         </header>
+
+        {/* 夜間模式狀態列（僅夜間模式啟用時顯示，可一鍵手動退出或開啟系統飛航設定） */}
+        {powerEval.isNightSleepActive && (
+          <div
+            role="status"
+            className={`flex flex-wrap items-center justify-between gap-1.5 ${
+              isCompact4 ? 'py-1 px-2 mt-1' : 'py-1.5 px-2.5 mt-1.5'
+            } border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--surface-subtle)] shrink-0`}
+          >
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[length:calc(12px*var(--fs-ctrl))] font-extrabold min-w-0">
+              <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                <Moon className="w-[1em] h-[1em] shrink-0" />
+                夜間休眠省電中
+              </span>
+              <span className="text-[var(--fg-muted)] font-bold font-num">
+                {[
+                  powerEval.isFiveMinuteClockActive ? '5分一跳' : null,
+                  powerEval.forceZeroBacklight ? '背光0%' : null,
+                  '停全刷',
+                  nightRadioResult?.summary || null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {powerEval.shouldDisableNightRadios &&
+                (nightRadioResult?.needsManualShortcut || isStandaloneApkRuntime()) && (
+                  <button
+                    type="button"
+                    onClick={() => void openNativeWirelessSettings('airplane')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 text-[length:calc(11.5px*var(--fs-ctrl))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[5px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer whitespace-nowrap"
+                  >
+                    <Plane className="w-[0.95em] h-[0.95em] shrink-0" />
+                    飛航／無線
+                  </button>
+                )}
+              <button
+                type="button"
+                onClick={handleExitNightMode}
+                className="inline-flex items-center gap-1 px-2.5 py-0.5 text-[length:calc(11.5px*var(--fs-ctrl))] font-black border-[1.5px] border-[var(--border-color)] rounded-[5px] bg-[var(--surface-active)] text-[var(--fg-inverse)] cursor-pointer whitespace-nowrap"
+              >
+                退出夜間模式
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* 內容主區域：4.3 吋、手機型（Viwoods）與 6 吋（Read6）採雙頁切換（第1頁時鐘天氣 / 第2頁農曆日曆），支援觸控滑動、底部按鈕與實體按鍵 */}
         {isTwoPageMode ? (
@@ -1546,7 +1618,7 @@ export default function App() {
                         ? `國定假日 · ${todayInfo.holiday}`
                         : todayInfo.solarTerm
                           ? `節氣 · ${todayInfo.solarTerm}`
-                          : backlightEval.shortLabel}
+                          : effectiveBacklightShortLabel}
                     </div>
                   </section>
                   <div className="flex flex-col justify-center min-h-0 overflow-y-auto">
@@ -1577,7 +1649,7 @@ export default function App() {
                     <div className={`mt-1.5 flex items-center justify-center gap-2 ${isReader6 ? 'text-[length:calc(14px*var(--fs))]' : isPhone ? 'text-[length:calc(13px*var(--fs))]' : 'text-[length:calc(11.5px*var(--fs))]'} font-bold text-[var(--fg-muted)]`}>
                       <span>{townPreset.name}</span>
                       <span aria-hidden="true">·</span>
-                      <span>{backlightEval.shortLabel}</span>
+                      <span>{effectiveBacklightShortLabel}</span>
                       {todayInfo.holiday && (
                         <>
                           <span aria-hidden="true">·</span>
@@ -1712,7 +1784,7 @@ export default function App() {
                         : `農曆 ${todayInfo.lunarMonthText}${todayInfo.lunarDayText}`}
                   </span>
                   <span className="text-[length:calc(12.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
-                    {backlightEval.shortLabel} · {powerEval.summaryText}
+                    {effectiveBacklightShortLabel} · {powerEval.summaryText}
                   </span>
                 </div>
               </div>
@@ -2109,7 +2181,7 @@ export default function App() {
                   </span>
                 </label>
 
-                {/* 開關 2：夜間自動休眠排程 */}
+                {/* 開關 2：夜間休眠與夜間極致省電排程 */}
                 <div className="flex flex-col gap-1.5">
                   <label className="flex items-start gap-2 text-[length:calc(12.5px*var(--fs))] font-bold cursor-pointer leading-[1.45]">
                     <input
@@ -2124,14 +2196,14 @@ export default function App() {
                       className="w-[1.15em] h-[1.15em] mt-0.5 shrink-0 accent-[var(--fg-color)]"
                     />
                     <span>
-                      夜間自動休眠排程（推薦：睡覺時段自動釋放常亮鎖，讓 Android 進入深度省電並暫停同步與全刷）
+                      夜間休眠排程（睡覺時段釋放常亮鎖由系統休眠，早上自行按電源鍵喚醒；並自動取消夜間全刷清殘影與背景同步）
                     </span>
                   </label>
 
                   {draftPowerSettings.nightSleepEnabled && (
                     <div className="flex flex-col gap-2 pl-6 text-[length:calc(12.5px*var(--fs))] font-bold">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span>休眠時段：</span>
+                        <span>夜間時段：</span>
                         <select
                           aria-label="夜間休眠開始時間"
                           value={draftPowerSettings.nightSleepStartHour}
@@ -2172,116 +2244,89 @@ export default function App() {
                       <label className="flex items-start gap-2 cursor-pointer leading-[1.45]">
                         <input
                           type="checkbox"
-                          checked={draftPowerSettings.nightSleepAutoWake}
+                          checked={draftPowerSettings.nightAutoAirplaneRadio}
                           onChange={(e) =>
                             setDraftPowerSettings((prev) => ({
                               ...prev,
-                              nightSleepAutoWake: e.target.checked,
+                              nightAutoAirplaneRadio: e.target.checked,
                             }))
                           }
                           className="w-[1.1em] h-[1.1em] mt-0.5 shrink-0 accent-[var(--fg-color)]"
                         />
                         <span>
-                          早上到達結束時間自動喚醒（透過 Android 鬧鐘從深度休眠喚醒螢幕並回到時鐘）
+                          夜間自動開啟飛航模式，並關閉 Wi-Fi 與藍牙（退出夜間模式時還原）
+                          <span className="block text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
+                            Android 7～12 可直接關閉藍牙；Android 10 以上受系統安全限制無法靜默切換飛航與 Wi-Fi，夜間狀態列將顯示一鍵飛航設定按鈕。
+                          </span>
+                        </span>
+                      </label>
+
+                      <label className="flex items-start gap-2 cursor-pointer leading-[1.45]">
+                        <input
+                          type="checkbox"
+                          checked={draftPowerSettings.nightForceZeroBacklight}
+                          onChange={(e) =>
+                            setDraftPowerSettings((prev) => ({
+                              ...prev,
+                              nightForceZeroBacklight: e.target.checked,
+                            }))
+                          }
+                          className="w-[1.1em] h-[1.1em] mt-0.5 shrink-0 accent-[var(--fg-color)]"
+                        />
+                        <span>夜間強制背光 0%（退出夜間模式後自動恢復原背光設定）</span>
+                      </label>
+
+                      <label className="flex items-start gap-2 cursor-pointer leading-[1.45]">
+                        <input
+                          type="checkbox"
+                          checked={draftPowerSettings.nightFiveMinuteClock}
+                          onChange={(e) =>
+                            setDraftPowerSettings((prev) => ({
+                              ...prev,
+                              nightFiveMinuteClock: e.target.checked,
+                            }))
+                          }
+                          className="w-[1.1em] h-[1.1em] mt-0.5 shrink-0 accent-[var(--fg-color)]"
+                        />
+                        <span>
+                          夜間時鐘拉長至每 5 分鐘跳動一次，並取消夜間全刷清殘影直到退出夜間模式
                         </span>
                       </label>
 
                       <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                        <button
-                          type="button"
-                          onClick={handleScheduleTestWake}
-                          disabled={testWakeState.status === 'loading'}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[length:calc(12px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer active:bg-[var(--surface-active)] active:text-[var(--fg-inverse)] disabled:opacity-50"
-                        >
-                          <Clock className="w-[1em] h-[1em] shrink-0" />
-                          測試 1 分鐘後自動喚醒
-                        </button>
-                        <span className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
-                          點完請按電源鍵休眠，60 秒後觀察是否自動亮屏
-                        </span>
+                        {powerEval.isNightSleepActive ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleExitNightMode();
+                              setIsSettingsOpen(false);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[length:calc(12px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--surface-active)] text-[var(--fg-inverse)] cursor-pointer"
+                          >
+                            <Sun className="w-[1em] h-[1em] shrink-0" />
+                            立即手動退出夜間模式
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={handleEnterNightModeManually}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[length:calc(12px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer active:bg-[var(--surface-active)] active:text-[var(--fg-inverse)]"
+                          >
+                            <Moon className="w-[1em] h-[1em] shrink-0" />
+                            立即手動進入夜間模式
+                          </button>
+                        )}
+                        {isStandaloneApkRuntime() && (
+                          <button
+                            type="button"
+                            onClick={() => void openNativeWirelessSettings('airplane')}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[length:calc(12px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer"
+                          >
+                            <Plane className="w-[1em] h-[1em] shrink-0" />
+                            開啟系統飛航設定
+                          </button>
+                        )}
                       </div>
-
-                      {testWakeState.status !== 'idle' && (
-                        <p
-                          className={`text-[length:calc(12px*var(--fs))] leading-[1.5] px-2.5 py-2 rounded-[6px] border ${
-                            testWakeState.status === 'error'
-                              ? 'font-extrabold border-[var(--border-color)] bg-[var(--bg-color)]'
-                              : 'font-bold border-[var(--border-subtle)] bg-[var(--bg-color)]'
-                          }`}
-                        >
-                          {testWakeState.message}
-                        </p>
-                      )}
-
-                      {wakeDiag && (
-                        <div className="flex flex-col gap-1.5 px-2.5 py-2 rounded-[6px] border border-[var(--border-subtle)] bg-[var(--bg-color)]">
-                          <div className="flex flex-wrap items-center justify-between gap-1.5 text-[length:calc(11.5px*var(--fs))] font-extrabold font-num">
-                            <span>
-                              權限檢查（API {wakeDiag.sdkInt}）：上層顯示
-                              {wakeDiag.canDrawOverlays ? '✓' : '✗'} · 通知
-                              {wakeDiag.notificationsEnabled && wakeDiag.canFullScreenIntent
-                                ? '✓'
-                                : '✗'}{' '}
-                              · 精準鬧鐘{wakeDiag.canExactAlarm ? '✓' : '✗'}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={handleRefreshWakeDiag}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 text-[length:calc(11px*var(--fs))] font-extrabold border border-[var(--border-color)] rounded bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer"
-                            >
-                              <RefreshCw className="w-[0.95em] h-[0.95em]" />
-                              重新檢查
-                            </button>
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            {!wakeDiag.canDrawOverlays && (
-                              <button
-                                type="button"
-                                onClick={() => handleOpenWakePermission('overlay')}
-                                className="px-2.5 py-1 text-[length:calc(11.5px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--surface-active)] text-[var(--fg-inverse)] cursor-pointer"
-                              >
-                                開啟「顯示在其他應用程式上層」（Android 10+ 必開）
-                              </button>
-                            )}
-                            {!wakeDiag.notificationsEnabled && (
-                              <button
-                                type="button"
-                                onClick={() => handleOpenWakePermission('notifications')}
-                                className="px-2.5 py-1 text-[length:calc(11.5px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer"
-                              >
-                                開啟通知權限
-                              </button>
-                            )}
-                            {!wakeDiag.canFullScreenIntent && wakeDiag.sdkInt >= 34 && (
-                              <button
-                                type="button"
-                                onClick={() => handleOpenWakePermission('fullscreen')}
-                                className="px-2.5 py-1 text-[length:calc(11.5px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer"
-                              >
-                                開啟全螢幕喚醒權限
-                              </button>
-                            )}
-                            {!wakeDiag.canExactAlarm && wakeDiag.sdkInt >= 31 && (
-                              <button
-                                type="button"
-                                onClick={() => handleOpenWakePermission('exact_alarm')}
-                                className="px-2.5 py-1 text-[length:calc(11.5px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer"
-                              >
-                                開啟精準鬧鐘權限
-                              </button>
-                            )}
-                          </div>
-
-                          <p className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.45] font-num">
-                            {formatWakeDiagnosticSummary(wakeDiag)}
-                          </p>
-                        </div>
-                      )}
-
-                      <p className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.45]">
-                        註：Android 10 以上（含 BOOX 10.3）會攔截背景直接喚醒視窗；若測試沒亮屏，請先點擊上方「開啟顯示在其他應用程式上層」並確認通知已允許後再重測，下方會顯示實際觸發診斷。
-                      </p>
                     </div>
                   )}
                 </div>
@@ -2777,8 +2822,8 @@ export default function App() {
                   每逢整點（00 分）與半點（30 分）自動全螢幕黑白刷新清除殘影，亦可隨時點擊頂部「清殘影」或切換「淺色／深色」反白顯示。
                 </li>
                 <li>
-                  <span className="font-extrabold">背光、續航與休眠排程：</span>
-                  可於設定「進階續航與休眠開關」自由調整螢幕常亮鎖、夜間自動休眠時段（時段內釋放常亮鎖進入深度休眠，並可勾選「早上到達結束時間自動喚醒」與使用 1 分鐘喚醒測試）、純離線模式、背景同步週期（15 分～2 小時／僅手動）與自動清殘影頻率，亦可點擊「一鍵套用長續航建議」。
+                  <span className="font-extrabold">背光、續航與夜間休眠排程：</span>
+                  可於設定「進階續航與休眠開關」調整螢幕常亮鎖與夜間休眠時段（時段內釋放常亮鎖由系統休眠、早上自行喚醒，並可獨立勾選夜間飛航／關閉 Wi-Fi 與藍牙、背光強制 0%、時鐘拉長為每 5 分鐘一跳，且自動取消夜間全刷清殘影與背景同步，直到到達結束時間或點選主畫面「退出夜間模式」為止）。
                 </li>
                 <li>
                   <span className="font-extrabold">單一 API Key 與隱私：</span>

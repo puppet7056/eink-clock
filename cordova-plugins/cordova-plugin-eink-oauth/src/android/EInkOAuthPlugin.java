@@ -1,18 +1,19 @@
 package tw.eink.clockdashboard;
 
 import android.app.Activity;
-import android.app.KeyguardManager;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.provider.Settings;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
-import android.view.WindowManager;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import javax.crypto.Cipher;
@@ -32,7 +33,7 @@ import org.json.JSONObject;
  * Lightweight native Android bridge for Cordova Android 13+ (API 34):
  * - OAuth 2.0 system-browser sign-in & custom URI scheme deep-link callback (no GMS required).
  * - Android Keystore AES-256-GCM encrypted refresh_token persistence across APK updates/reboots.
- * - AlarmManager.setAlarmClock() deep-sleep auto-wake scheduler & screen-turn-on window flags.
+ * - Night-mode best-effort radio controller (Bluetooth / Wi-Fi / Airplane Mode + quick settings).
  */
 public class EInkOAuthPlugin extends CordovaPlugin {
     private static final String KEYSTORE_PROVIDER = "AndroidKeyStore";
@@ -45,7 +46,12 @@ public class EInkOAuthPlugin extends CordovaPlugin {
     private static final String PREF_CIPHERTEXT = "rt_ct";
     private static final String PREF_IV = "rt_iv";
     private static final String PREF_ACCOUNT_EMAIL = "acct_email";
-    private static final int REQ_POST_NOTIFICATIONS = 4301;
+
+    private static final String RADIO_PREFS_NAME = "eink_clock_night_radio_prefs";
+    private static final String PREF_WIFI_DISABLED_BY_APP = "wifi_disabled_by_app";
+    private static final String PREF_BT_DISABLED_BY_APP = "bt_disabled_by_app";
+    private static final String PREF_AIRPLANE_ENABLED_BY_APP = "airplane_enabled_by_app";
+    private static final int REQ_BLUETOOTH_CONNECT = 4401;
 
     private CallbackContext listenerCallbackContext = null;
     private String pendingCallbackUrl = null;
@@ -55,14 +61,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
         super.initialize(cordova, webView);
         Activity activity = cordova.getActivity();
         if (activity != null) {
-            Intent launchIntent = activity.getIntent();
-            boolean wokenByAlarm =
-                    launchIntent != null
-                            && launchIntent.getBooleanExtra(EInkWakeReceiver.EXTRA_AUTO_WAKE_LAUNCH, false);
-            if (wokenByAlarm || EInkWakeReceiver.isDailyWakeEnabled(activity)) {
-                applyWakeWindowFlags(activity, true, wokenByAlarm);
-            }
-            handlePossibleOAuthIntent(launchIntent);
+            handlePossibleOAuthIntent(activity.getIntent());
         }
     }
 
@@ -70,43 +69,9 @@ public class EInkOAuthPlugin extends CordovaPlugin {
     public void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         if (cordova != null && cordova.getActivity() != null && intent != null) {
-            Activity activity = cordova.getActivity();
-            activity.setIntent(intent);
-            if (intent.getBooleanExtra(EInkWakeReceiver.EXTRA_AUTO_WAKE_LAUNCH, false)) {
-                applyWakeWindowFlags(activity, true, true);
-            }
+            cordova.getActivity().setIntent(intent);
         }
         handlePossibleOAuthIntent(intent);
-    }
-
-    @SuppressWarnings("deprecation")
-    private void applyWakeWindowFlags(Activity activity, boolean allowWakeOverLock, boolean requestDismissKeyguard) {
-        if (activity == null) return;
-        activity.runOnUiThread(() -> {
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                    activity.setShowWhenLocked(allowWakeOverLock);
-                    activity.setTurnScreenOn(allowWakeOverLock);
-                } else {
-                    int flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-                            | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-                            | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD;
-                    if (allowWakeOverLock) {
-                        activity.getWindow().addFlags(flags);
-                    } else {
-                        activity.getWindow().clearFlags(flags);
-                    }
-                }
-                if (requestDismissKeyguard && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    KeyguardManager km = (KeyguardManager) activity.getSystemService(Context.KEYGUARD_SERVICE);
-                    if (km != null && km.isKeyguardLocked()) {
-                        km.requestDismissKeyguard(activity, null);
-                    }
-                }
-            } catch (Exception ignored) {
-                // Ignore ROM-specific window flag restrictions
-            }
-        });
     }
 
     private boolean isOAuthCallbackUri(Uri uri) {
@@ -140,6 +105,11 @@ public class EInkOAuthPlugin extends CordovaPlugin {
     private SharedPreferences getSecurePrefs() {
         Context ctx = cordova.getActivity().getApplicationContext();
         return ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+    }
+
+    private SharedPreferences getRadioPrefs() {
+        Context ctx = cordova.getActivity().getApplicationContext();
+        return ctx.getSharedPreferences(RADIO_PREFS_NAME, Context.MODE_PRIVATE);
     }
 
     private SecretKey getOrCreateSecretKey() throws Exception {
@@ -239,6 +209,213 @@ public class EInkOAuthPlugin extends CordovaPlugin {
         getSecurePrefs().edit().clear().apply();
     }
 
+    @SuppressWarnings("deprecation")
+    private BluetoothAdapter getBluetoothAdapter(Context appCtx) {
+        try {
+            BluetoothManager bm = (BluetoothManager) appCtx.getSystemService(Context.BLUETOOTH_SERVICE);
+            if (bm != null && bm.getAdapter() != null) {
+                return bm.getAdapter();
+            }
+            return BluetoothAdapter.getDefaultAdapter();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private boolean hasBluetoothConnectPermission(Context ctx) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return ctx.checkSelfPermission("android.permission.BLUETOOTH_CONNECT")
+                    == PackageManager.PERMISSION_GRANTED;
+        }
+        return true;
+    }
+
+    @SuppressWarnings("deprecation")
+    private JSONObject applyNightRadioMode(Activity activity, boolean enterNightMode) throws JSONException {
+        Context appCtx = activity.getApplicationContext();
+        SharedPreferences radioPrefs = getRadioPrefs();
+        SharedPreferences.Editor editor = radioPrefs.edit();
+
+        String airplaneStatus = "unchanged";
+        String wifiStatus = "unchanged";
+        String bluetoothStatus = "unchanged";
+        boolean needsManualShortcut = false;
+
+        // 1. Airplane Mode (only writable if WRITE_SECURE_SETTINGS was granted via ADB / system privilege)
+        boolean hasSecureSettings = false;
+        try {
+            hasSecureSettings = appCtx.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS")
+                    == PackageManager.PERMISSION_GRANTED;
+        } catch (Exception ignored) {
+            hasSecureSettings = false;
+        }
+
+        if (enterNightMode) {
+            boolean alreadyAirplane =
+                    Settings.Global.getInt(appCtx.getContentResolver(), Settings.Global.AIRPLANE_MODE_ON, 0) == 1;
+            if (alreadyAirplane) {
+                airplaneStatus = "already_on";
+            } else if (hasSecureSettings) {
+                try {
+                    Settings.Global.putInt(appCtx.getContentResolver(), Settings.Global.AIRPLANE_MODE_ON, 1);
+                    try {
+                        Intent apIntent = new Intent(Intent.ACTION_AIRPLANE_MODE_CHANGED);
+                        apIntent.putExtra("state", true);
+                        appCtx.sendBroadcast(apIntent);
+                    } catch (Exception ignored) {
+                        // Protected broadcast on newer Android; setting value still updated
+                    }
+                    editor.putBoolean(PREF_AIRPLANE_ENABLED_BY_APP, true);
+                    airplaneStatus = "enabled";
+                } catch (Exception ignored) {
+                    airplaneStatus = "os_restricted";
+                    needsManualShortcut = true;
+                }
+            } else {
+                airplaneStatus = "os_restricted";
+                needsManualShortcut = true;
+            }
+        } else if (radioPrefs.getBoolean(PREF_AIRPLANE_ENABLED_BY_APP, false)) {
+            editor.putBoolean(PREF_AIRPLANE_ENABLED_BY_APP, false);
+            if (hasSecureSettings) {
+                try {
+                    Settings.Global.putInt(appCtx.getContentResolver(), Settings.Global.AIRPLANE_MODE_ON, 0);
+                    try {
+                        Intent apIntent = new Intent(Intent.ACTION_AIRPLANE_MODE_CHANGED);
+                        apIntent.putExtra("state", false);
+                        appCtx.sendBroadcast(apIntent);
+                    } catch (Exception ignored) {
+                        // ignore
+                    }
+                    airplaneStatus = "restored";
+                } catch (Exception ignored) {
+                    airplaneStatus = "os_restricted";
+                }
+            } else {
+                airplaneStatus = "os_restricted";
+            }
+        }
+
+        // 2. Wi-Fi (Android <= 9 or permissive ROMs support setWifiEnabled; Android 10+ targetSdk>=29 restricts it)
+        try {
+            WifiManager wifiManager = (WifiManager) appCtx.getSystemService(Context.WIFI_SERVICE);
+            if (wifiManager == null) {
+                wifiStatus = "unsupported";
+            } else if (enterNightMode) {
+                if (!wifiManager.isWifiEnabled()) {
+                    wifiStatus = "already_off";
+                } else {
+                    boolean ok = wifiManager.setWifiEnabled(false);
+                    if (ok) {
+                        editor.putBoolean(PREF_WIFI_DISABLED_BY_APP, true);
+                        wifiStatus = "disabled";
+                    } else {
+                        wifiStatus = "os_restricted";
+                        needsManualShortcut = true;
+                    }
+                }
+            } else if (radioPrefs.getBoolean(PREF_WIFI_DISABLED_BY_APP, false)) {
+                editor.putBoolean(PREF_WIFI_DISABLED_BY_APP, false);
+                boolean ok = wifiManager.setWifiEnabled(true);
+                wifiStatus = ok ? "restored" : "os_restricted";
+            }
+        } catch (Exception ignored) {
+            wifiStatus = "os_restricted";
+            if (enterNightMode) needsManualShortcut = true;
+        }
+
+        // 3. Bluetooth (works on Android 7-12 with BLUETOOTH_CONNECT on API 31-32; restricted on API 33+)
+        try {
+            BluetoothAdapter btAdapter = getBluetoothAdapter(appCtx);
+            if (btAdapter == null) {
+                bluetoothStatus = "unsupported";
+            } else if (!hasBluetoothConnectPermission(appCtx)) {
+                bluetoothStatus = "permission_needed";
+                if (enterNightMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    try {
+                        cordova.requestPermission(
+                                this,
+                                REQ_BLUETOOTH_CONNECT,
+                                "android.permission.BLUETOOTH_CONNECT"
+                        );
+                    } catch (Exception ignored) {
+                        // ignore
+                    }
+                    needsManualShortcut = true;
+                }
+            } else if (enterNightMode) {
+                if (!btAdapter.isEnabled()) {
+                    bluetoothStatus = "already_off";
+                } else {
+                    boolean ok = btAdapter.disable();
+                    if (ok) {
+                        editor.putBoolean(PREF_BT_DISABLED_BY_APP, true);
+                        bluetoothStatus = "disabled";
+                    } else {
+                        bluetoothStatus = "os_restricted";
+                        needsManualShortcut = true;
+                    }
+                }
+            } else if (radioPrefs.getBoolean(PREF_BT_DISABLED_BY_APP, false)) {
+                editor.putBoolean(PREF_BT_DISABLED_BY_APP, false);
+                boolean ok = btAdapter.enable();
+                bluetoothStatus = ok ? "restored" : "os_restricted";
+            }
+        } catch (SecurityException ignored) {
+            bluetoothStatus = "permission_needed";
+            if (enterNightMode) needsManualShortcut = true;
+        } catch (Exception ignored) {
+            bluetoothStatus = "os_restricted";
+            if (enterNightMode) needsManualShortcut = true;
+        }
+
+        editor.apply();
+
+        JSONObject result = new JSONObject();
+        result.put("sdkInt", Build.VERSION.SDK_INT);
+        result.put("enterNightMode", enterNightMode);
+        result.put("airplane", airplaneStatus);
+        result.put("wifi", wifiStatus);
+        result.put("bluetooth", bluetoothStatus);
+        result.put("needsManualShortcut", needsManualShortcut);
+        return result;
+    }
+
+    private void openWirelessSettings(Activity activity, String target) {
+        if (activity == null) return;
+        Intent intent = null;
+
+        if ("wifi".equals(target)) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                intent = new Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY);
+            } else {
+                intent = new Intent(Settings.ACTION_WIFI_SETTINGS);
+            }
+        } else if ("bluetooth".equals(target)) {
+            intent = new Intent(Settings.ACTION_BLUETOOTH_SETTINGS);
+        } else {
+            intent = new Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS);
+        }
+
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            activity.startActivity(intent);
+            return;
+        } catch (Exception ignored) {
+            // Fall back to generic wireless settings
+        }
+
+        Intent fallback = new Intent(Settings.ACTION_WIRELESS_SETTINGS);
+        fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            activity.startActivity(fallback);
+        } catch (Exception ignored) {
+            Intent settingsRoot = new Intent(Settings.ACTION_SETTINGS);
+            settingsRoot.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            activity.startActivity(settingsRoot);
+        }
+    }
+
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
         if ("openAuthUrl".equals(action)) {
@@ -330,114 +507,28 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             return true;
         }
 
-        if ("scheduleDailyWake".equals(action)) {
-            int hour = args.optInt(0, 7);
-            int minute = args.optInt(1, 0);
+        if ("setNightRadioMode".equals(action)) {
+            boolean enterNightMode = args.optBoolean(0, true);
             try {
-                Activity activity = cordova.getActivity();
-                maybeRequestPostNotifications(activity);
-                applyWakeWindowFlags(activity, true, false);
-                JSONObject res = EInkWakeReceiver.scheduleDailyWake(activity, hour, minute);
+                JSONObject res = applyNightRadioMode(cordova.getActivity(), enterNightMode);
                 callbackContext.success(res);
             } catch (Exception e) {
-                callbackContext.error("Failed to schedule daily wake: " + e.getMessage());
+                callbackContext.error("Failed to update night radio mode: " + e.getMessage());
             }
             return true;
         }
 
-        if ("cancelDailyWake".equals(action)) {
+        if ("openWirelessSettings".equals(action)) {
+            String target = args.optString(0, "airplane");
             try {
-                Activity activity = cordova.getActivity();
-                EInkWakeReceiver.cancelDailyWake(activity);
-                applyWakeWindowFlags(activity, false, false);
+                openWirelessSettings(cordova.getActivity(), target);
                 callbackContext.success();
             } catch (Exception e) {
-                callbackContext.error("Failed to cancel daily wake: " + e.getMessage());
-            }
-            return true;
-        }
-
-        if ("scheduleTestWake".equals(action)) {
-            int delaySeconds = args.optInt(0, 60);
-            try {
-                Activity activity = cordova.getActivity();
-                maybeRequestPostNotifications(activity);
-                applyWakeWindowFlags(activity, true, false);
-                JSONObject res = EInkWakeReceiver.scheduleTestWake(activity, delaySeconds);
-                callbackContext.success(res);
-            } catch (Exception e) {
-                callbackContext.error("Failed to schedule test wake: " + e.getMessage());
-            }
-            return true;
-        }
-
-        if ("getWakeStatus".equals(action)) {
-            try {
-                JSONObject res = EInkWakeReceiver.getWakeStatus(cordova.getActivity());
-                callbackContext.success(res);
-            } catch (Exception e) {
-                callbackContext.error("Failed to get wake status: " + e.getMessage());
-            }
-            return true;
-        }
-
-        if ("openWakePermissionSettings".equals(action)) {
-            String target = args.optString(0, "overlay");
-            try {
-                openWakePermissionSettings(cordova.getActivity(), target);
-                callbackContext.success();
-            } catch (Exception e) {
-                callbackContext.error("Failed to open settings: " + e.getMessage());
+                callbackContext.error("Failed to open wireless settings: " + e.getMessage());
             }
             return true;
         }
 
         return false;
-    }
-
-    private void maybeRequestPostNotifications(Activity activity) {
-        if (activity == null) return;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            try {
-                String perm = "android.permission.POST_NOTIFICATIONS";
-                if (activity.checkSelfPermission(perm) != PackageManager.PERMISSION_GRANTED) {
-                    cordova.requestPermission(this, REQ_POST_NOTIFICATIONS, perm);
-                }
-            } catch (Exception ignored) {
-                // ignore
-            }
-        }
-    }
-
-    private void openWakePermissionSettings(Activity activity, String target) {
-        if (activity == null) return;
-        String pkg = activity.getPackageName();
-        Uri pkgUri = Uri.parse("package:" + pkg);
-        Intent intent = null;
-
-        if ("overlay".equals(target) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, pkgUri);
-        } else if ("exact_alarm".equals(target) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            intent = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, pkgUri);
-        } else if ("fullscreen".equals(target) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            intent = new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, pkgUri);
-        } else if ("notifications".equals(target) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
-            intent.putExtra(Settings.EXTRA_APP_PACKAGE, pkg);
-        }
-
-        if (intent != null) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            try {
-                activity.startActivity(intent);
-                return;
-            } catch (Exception ignored) {
-                // Fall back to app details page below
-            }
-        }
-
-        Intent fallback = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri);
-        fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        activity.startActivity(fallback);
     }
 }

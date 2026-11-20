@@ -4,14 +4,18 @@ export type GhostCleanIntervalMinutes = 30 | 60 | 120 | 0; // 0 = 關閉自動�
 export interface PowerSettings {
   /** 是否啟用螢幕常亮（防休眠鎖 WakeLock）；關閉則交由閱讀器系統自行待機休眠 */
   keepScreenAwake: boolean;
-  /** 是否啟用夜間自動休眠排程（時段內自動釋放常亮鎖，讓 Android 進入深度省電） */
+  /** 是否啟用夜間休眠排程（時段內自動釋放常亮鎖由系統休眠，早上自行喚醒，並停用全刷與同步） */
   nightSleepEnabled: boolean;
-  /** 夜間自動休眠開始小時 (0 ~ 23) */
+  /** 夜間休眠開始小時 (0 ~ 23) */
   nightSleepStartHour: number;
-  /** 夜間自動休眠結束小時 (0 ~ 23) */
+  /** 夜間休眠結束小時 (0 ~ 23) */
   nightSleepEndHour: number;
-  /** 早上到達休眠結束時間時，是否透過 Android 原生 AlarmManager 自動喚醒螢幕回到時鐘 */
-  nightSleepAutoWake: boolean;
+  /** 夜間自動嘗試開啟飛航模式並關閉 Wi-Fi／藍牙（退出夜間模式時自動還原由本程式關閉之項目） */
+  nightAutoAirplaneRadio: boolean;
+  /** 夜間模式強制背光歸零（0%） */
+  nightForceZeroBacklight: boolean;
+  /** 夜間模式時鐘數字改為每 5 分鐘更新一次（大幅減少 CPU 喚醒與電子紙刷新） */
+  nightFiveMinuteClock: boolean;
   /** 氣象與日曆背景同步週期（分鐘）：15 / 30 / 60 / 120 / 0(僅手動) */
   syncIntervalMinutes: SyncIntervalMinutes;
   /** 電子紙自動清殘影全刷週期（分鐘）：30 / 60 / 120 / 0(關閉自動全刷) */
@@ -25,7 +29,9 @@ export const DEFAULT_POWER_SETTINGS: PowerSettings = {
   nightSleepEnabled: false,
   nightSleepStartHour: 23,
   nightSleepEndHour: 7,
-  nightSleepAutoWake: true,
+  nightAutoAirplaneRadio: true,
+  nightForceZeroBacklight: true,
+  nightFiveMinuteClock: true,
   syncIntervalMinutes: 30,
   ghostCleanIntervalMinutes: 60,
   offlineClockMode: false,
@@ -36,15 +42,28 @@ export const MAX_BATTERY_POWER_PRESET: PowerSettings = {
   nightSleepEnabled: true,
   nightSleepStartHour: 23,
   nightSleepEndHour: 7,
-  nightSleepAutoWake: true,
+  nightAutoAirplaneRadio: true,
+  nightForceZeroBacklight: true,
+  nightFiveMinuteClock: true,
   syncIntervalMinutes: 60,
   ghostCleanIntervalMinutes: 120,
   offlineClockMode: false,
 };
 
+export interface NightOverrideState {
+  manualNightExitKey?: string | null;
+  manualNightForceActive?: boolean;
+}
+
 export interface PowerEvaluation {
   shouldKeepAwake: boolean;
   isNightSleepActive: boolean;
+  isScheduledNightWindow: boolean;
+  isManuallyExitedTonight: boolean;
+  scheduledWindowKey: string | null;
+  forceZeroBacklight: boolean;
+  isFiveMinuteClockActive: boolean;
+  shouldDisableNightRadios: boolean;
   effectiveSyncMinutes: SyncIntervalMinutes;
   effectiveGhostCleanMinutes: GhostCleanIntervalMinutes;
   summaryText: string;
@@ -86,7 +105,9 @@ export function loadPowerSettings(): PowerSettings {
         parsed.nightSleepEndHour,
         DEFAULT_POWER_SETTINGS.nightSleepEndHour
       ),
-      nightSleepAutoWake: parsed.nightSleepAutoWake !== false,
+      nightAutoAirplaneRadio: parsed.nightAutoAirplaneRadio !== false,
+      nightForceZeroBacklight: parsed.nightForceZeroBacklight !== false,
+      nightFiveMinuteClock: parsed.nightFiveMinuteClock !== false,
       syncIntervalMinutes: normalizeSyncInterval(parsed.syncIntervalMinutes),
       ghostCleanIntervalMinutes: normalizeGhostInterval(parsed.ghostCleanIntervalMinutes),
       offlineClockMode: Boolean(parsed.offlineClockMode),
@@ -115,10 +136,40 @@ export function isWithinNightSleepWindow(settings: PowerSettings, now: Date): bo
   return hour >= start && hour < end;
 }
 
-export function evaluatePowerState(settings: PowerSettings, now: Date): PowerEvaluation {
+export function getNightWindowKey(settings: PowerSettings, now: Date): string | null {
+  if (!settings.nightSleepEnabled || !isWithinNightSleepWindow(settings, now)) {
+    return null;
+  }
+  const anchor = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (settings.nightSleepStartHour > settings.nightSleepEndHour && now.getHours() < settings.nightSleepEndHour) {
+    anchor.setDate(anchor.getDate() - 1);
+  }
+  const y = anchor.getFullYear();
+  const m = String(anchor.getMonth() + 1).padStart(2, '0');
+  const d = String(anchor.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}_${settings.nightSleepStartHour}-${settings.nightSleepEndHour}`;
+}
+
+export function evaluatePowerState(
+  settings: PowerSettings,
+  now: Date,
+  overrides?: NightOverrideState
+): PowerEvaluation {
+  const scheduledWindowKey = getNightWindowKey(settings, now);
+  const isScheduledNightWindow = scheduledWindowKey !== null;
+  const isManuallyExitedTonight = Boolean(
+    isScheduledNightWindow &&
+      overrides?.manualNightExitKey &&
+      overrides.manualNightExitKey === scheduledWindowKey
+  );
   const isNightSleepActive =
-    settings.nightSleepEnabled && isWithinNightSleepWindow(settings, now);
+    Boolean(overrides?.manualNightForceActive) ||
+    (isScheduledNightWindow && !isManuallyExitedTonight);
+
   const shouldKeepAwake = settings.keepScreenAwake && !isNightSleepActive;
+  const forceZeroBacklight = isNightSleepActive && settings.nightForceZeroBacklight;
+  const isFiveMinuteClockActive = isNightSleepActive && settings.nightFiveMinuteClock;
+  const shouldDisableNightRadios = isNightSleepActive && settings.nightAutoAirplaneRadio;
   const effectiveSyncMinutes: SyncIntervalMinutes =
     settings.offlineClockMode || isNightSleepActive ? 0 : settings.syncIntervalMinutes;
   const effectiveGhostCleanMinutes: GhostCleanIntervalMinutes = isNightSleepActive
@@ -129,12 +180,20 @@ export function evaluatePowerState(settings: PowerSettings, now: Date): PowerEva
   if (!settings.keepScreenAwake) {
     parts.push('跟隨系統休眠');
   } else if (isNightSleepActive) {
-    parts.push(settings.nightSleepAutoWake ? '夜間休眠中(含早喚醒)' : '夜間休眠中');
+    const nightTags: string[] = ['夜間模式中'];
+    if (isFiveMinuteClockActive) nightTags.push('5分一跳');
+    if (forceZeroBacklight) nightTags.push('背光0%');
+    if (shouldDisableNightRadios) nightTags.push('飛航/無線省電');
+    parts.push(nightTags.join('·'));
   } else if (settings.nightSleepEnabled) {
     const startLabel = String(settings.nightSleepStartHour).padStart(2, '0');
     const endLabel = String(settings.nightSleepEndHour).padStart(2, '0');
+    const extras: string[] = [];
+    if (settings.nightFiveMinuteClock) extras.push('5分跳');
+    if (settings.nightForceZeroBacklight) extras.push('背光0');
+    if (settings.nightAutoAirplaneRadio) extras.push('飛航/無線');
     parts.push(
-      `夜休 ${startLabel}-${endLabel}${settings.nightSleepAutoWake ? '(含自動喚醒)' : ''}`
+      `夜休 ${startLabel}-${endLabel}${extras.length > 0 ? `(${extras.join('/')})` : ''}`
     );
   } else {
     parts.push('常亮');
@@ -143,13 +202,13 @@ export function evaluatePowerState(settings: PowerSettings, now: Date): PowerEva
   if (settings.offlineClockMode) {
     parts.push('離線模式');
   } else if (effectiveSyncMinutes === 0) {
-    parts.push('手動同步');
+    parts.push(isNightSleepActive ? '暫停同步' : '手動同步');
   } else {
     parts.push(`${effectiveSyncMinutes}分同步`);
   }
 
   if (effectiveGhostCleanMinutes === 0) {
-    parts.push('關閉自動全刷');
+    parts.push(isNightSleepActive ? '停全刷' : '關閉自動全刷');
   } else {
     parts.push(`${effectiveGhostCleanMinutes}分全刷`);
   }
@@ -157,6 +216,12 @@ export function evaluatePowerState(settings: PowerSettings, now: Date): PowerEva
   return {
     shouldKeepAwake,
     isNightSleepActive,
+    isScheduledNightWindow,
+    isManuallyExitedTonight,
+    scheduledWindowKey,
+    forceZeroBacklight,
+    isFiveMinuteClockActive,
+    shouldDisableNightRadios,
     effectiveSyncMinutes,
     effectiveGhostCleanMinutes,
     summaryText: parts.join(' · '),
@@ -202,141 +267,137 @@ export function applyHardwareKeepAwake(shouldKeepAwake: boolean): 'applied' | 'u
   return 'unsupported';
 }
 
-export interface NativeWakeDiagnostics {
-  sdkInt: number;
-  manufacturer: string;
-  model: string;
-  enabled: boolean;
-  hour: number;
-  minute: number;
-  nextTriggerMillis: number;
-  canExactAlarm: boolean;
-  canDrawOverlays: boolean;
-  notificationsEnabled: boolean;
-  canFullScreenIntent: boolean;
-  ignoringBatteryOpt: boolean;
-  diagKind: string;
-  diagScheduledAt: number;
-  diagTargetAt: number;
-  diagAlarmFiredAt: number;
-  diagWakeActivityAt: number;
-  diagWakeSource: string;
-  diagInteractiveBefore: boolean;
-  diagInteractiveAfter: boolean;
-  diagExact: boolean;
-  diagLastError: string;
+export type WirelessSettingsTarget = 'airplane' | 'wifi' | 'bluetooth';
+
+export interface NightRadioResult {
+  status: 'applied' | 'unsupported' | 'error';
+  sdkInt?: number;
+  enterNightMode: boolean;
+  airplane?: string;
+  wifi?: string;
+  bluetooth?: string;
+  needsManualShortcut?: boolean;
+  summary?: string;
 }
 
-export type WakePermissionTarget = 'overlay' | 'notifications' | 'fullscreen' | 'exact_alarm';
-
-interface NativeWakeBridge {
-  scheduleDailyWake?: (
-    hour: number,
-    minute: number,
-    onSuccess?: (res: { scheduled?: boolean; exact?: boolean; triggerAtMillis?: number }) => void,
-    onError?: (err: unknown) => void
-  ) => void;
-  cancelDailyWake?: (onSuccess?: () => void, onError?: (err: unknown) => void) => void;
-  scheduleTestWake?: (
-    delaySeconds: number,
+interface NativeRadioBridge {
+  setNightRadioMode?: (
+    enterNightMode: boolean,
     onSuccess?: (res: {
-      scheduled?: boolean;
-      exact?: boolean;
-      delaySeconds?: number;
-      triggerAtMillis?: number;
+      sdkInt?: number;
+      enterNightMode?: boolean;
+      airplane?: string;
+      wifi?: string;
+      bluetooth?: string;
+      needsManualShortcut?: boolean;
     }) => void,
     onError?: (err: unknown) => void
   ) => void;
-  getWakeStatus?: (
-    onSuccess?: (res: Partial<NativeWakeDiagnostics>) => void,
-    onError?: (err: unknown) => void
-  ) => void;
-  openWakePermissionSettings?: (
-    target: WakePermissionTarget,
+  openWirelessSettings?: (
+    target: WirelessSettingsTarget,
     onSuccess?: () => void,
     onError?: (err: unknown) => void
   ) => void;
 }
 
-export interface NativeWakeScheduleResult {
-  status: 'scheduled' | 'cancelled' | 'unsupported' | 'error';
-  exact?: boolean;
-  triggerAtMillis?: number;
-  message?: string;
-}
-
-function getNativeWakeBridge(): NativeWakeBridge | null {
+function getNativeRadioBridge(): NativeRadioBridge | null {
   try {
-    const w = window as unknown as { EInkOAuth?: NativeWakeBridge };
+    const w = window as unknown as { EInkOAuth?: NativeRadioBridge };
     return w.EInkOAuth ?? null;
   } catch {
     return null;
   }
 }
 
-export function formatWakeTimeClock(millis: number): string {
-  const d = new Date(millis);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
+export function formatNightRadioSummary(res: NightRadioResult): string {
+  if (res.status === 'unsupported') {
+    return '';
+  }
+  if (res.status === 'error') {
+    return res.summary || '無線開關控制發生錯誤';
+  }
+  if (!res.enterNightMode) {
+    const restored: string[] = [];
+    if (res.airplane === 'restored') restored.push('飛航已關閉');
+    if (res.wifi === 'restored') restored.push('Wi-Fi已恢復');
+    if (res.bluetooth === 'restored') restored.push('藍牙已恢復');
+    return restored.join('、');
+  }
+
+  const done: string[] = [];
+  const restricted: string[] = [];
+
+  if (res.airplane === 'enabled' || res.airplane === 'already_on') {
+    done.push('飛航已開');
+  } else if (res.airplane === 'os_restricted') {
+    restricted.push('飛航');
+  }
+
+  if (res.wifi === 'disabled' || res.wifi === 'already_off') {
+    done.push('Wi-Fi已關');
+  } else if (res.wifi === 'os_restricted') {
+    restricted.push('Wi-Fi');
+  }
+
+  if (res.bluetooth === 'disabled' || res.bluetooth === 'already_off') {
+    done.push('藍牙已關');
+  } else if (res.bluetooth === 'permission_needed' || res.bluetooth === 'os_restricted') {
+    restricted.push('藍牙');
+  }
+
+  const chunks: string[] = [];
+  if (done.length > 0) chunks.push(done.join('·'));
+  if (restricted.length > 0) {
+    chunks.push(`系統限制無法靜默切換${restricted.join('/')}`);
+  }
+  return chunks.join('；');
 }
 
-export function fetchNativeWakeDiagnostics(): Promise<NativeWakeDiagnostics | null> {
-  const bridge = getNativeWakeBridge();
-  if (!bridge || typeof bridge.getWakeStatus !== 'function') {
-    return Promise.resolve(null);
+export function applyNativeNightRadioMode(enterNightMode: boolean): Promise<NightRadioResult> {
+  const bridge = getNativeRadioBridge();
+  if (!bridge || typeof bridge.setNightRadioMode !== 'function') {
+    return Promise.resolve({ status: 'unsupported', enterNightMode });
   }
 
   return new Promise((resolve) => {
     try {
-      bridge.getWakeStatus?.(
+      bridge.setNightRadioMode?.(
+        enterNightMode,
         (res) => {
-          if (!res || typeof res !== 'object') {
-            resolve(null);
-            return;
-          }
-          resolve({
-            sdkInt: Number(res.sdkInt) || 0,
-            manufacturer: String(res.manufacturer || ''),
-            model: String(res.model || ''),
-            enabled: Boolean(res.enabled),
-            hour: Number(res.hour) || 7,
-            minute: Number(res.minute) || 0,
-            nextTriggerMillis: Number(res.nextTriggerMillis) || 0,
-            canExactAlarm: res.canExactAlarm !== false,
-            canDrawOverlays: Boolean(res.canDrawOverlays),
-            notificationsEnabled: res.notificationsEnabled !== false,
-            canFullScreenIntent: res.canFullScreenIntent !== false,
-            ignoringBatteryOpt: Boolean(res.ignoringBatteryOpt),
-            diagKind: String(res.diagKind || ''),
-            diagScheduledAt: Number(res.diagScheduledAt) || 0,
-            diagTargetAt: Number(res.diagTargetAt) || 0,
-            diagAlarmFiredAt: Number(res.diagAlarmFiredAt) || 0,
-            diagWakeActivityAt: Number(res.diagWakeActivityAt) || 0,
-            diagWakeSource: String(res.diagWakeSource || ''),
-            diagInteractiveBefore: Boolean(res.diagInteractiveBefore),
-            diagInteractiveAfter: Boolean(res.diagInteractiveAfter),
-            diagExact: res.diagExact !== false,
-            diagLastError: String(res.diagLastError || ''),
-          });
+          const payload: NightRadioResult = {
+            status: 'applied',
+            sdkInt: res?.sdkInt,
+            enterNightMode,
+            airplane: res?.airplane,
+            wifi: res?.wifi,
+            bluetooth: res?.bluetooth,
+            needsManualShortcut: Boolean(res?.needsManualShortcut),
+          };
+          payload.summary = formatNightRadioSummary(payload);
+          resolve(payload);
         },
-        () => resolve(null)
+        (err) => {
+          resolve({
+            status: 'error',
+            enterNightMode,
+            summary: typeof err === 'string' ? err : '夜間無線控制失敗',
+          });
+        }
       );
     } catch {
-      resolve(null);
+      resolve({ status: 'error', enterNightMode, summary: '夜間無線控制發生例外' });
     }
   });
 }
 
-export function openNativeWakePermissionSettings(target: WakePermissionTarget): Promise<boolean> {
-  const bridge = getNativeWakeBridge();
-  if (!bridge || typeof bridge.openWakePermissionSettings !== 'function') {
+export function openNativeWirelessSettings(target: WirelessSettingsTarget = 'airplane'): Promise<boolean> {
+  const bridge = getNativeRadioBridge();
+  if (!bridge || typeof bridge.openWirelessSettings !== 'function') {
     return Promise.resolve(false);
   }
   return new Promise((resolve) => {
     try {
-      bridge.openWakePermissionSettings?.(
+      bridge.openWirelessSettings?.(
         target,
         () => resolve(true),
         () => resolve(false)
@@ -346,130 +407,3 @@ export function openNativeWakePermissionSettings(target: WakePermissionTarget): 
     }
   });
 }
-
-export function formatWakeDiagnosticSummary(diag: NativeWakeDiagnostics): string {
-  if (!diag.diagTargetAt) {
-    return '尚未執行過 1 分鐘喚醒測試。建議先確認「上層顯示」與「通知」已開啟，再點測試。';
-  }
-
-  const targetStr = formatWakeTimeClock(diag.diagTargetAt);
-  const nowMs = Date.now();
-
-  if (diag.diagWakeActivityAt > 0) {
-    const actStr = formatWakeTimeClock(diag.diagWakeActivityAt);
-    const alarmStr = diag.diagAlarmFiredAt > 0 ? formatWakeTimeClock(diag.diagAlarmFiredAt) : actStr;
-    const screenState = diag.diagInteractiveAfter ? '螢幕已點亮' : '系統未回報螢幕點亮';
-    const pathLabel = diag.diagWakeSource ? `（路徑：${diag.diagWakeSource}）` : '';
-    return `上次測試（預定 ${targetStr}）：鬧鐘於 ${alarmStr} 觸發 → 喚醒視窗於 ${actStr} 啟動 → ${screenState}${pathLabel}${diag.diagLastError ? `｜備註：${diag.diagLastError}` : ''}`;
-  }
-
-  if (diag.diagAlarmFiredAt > 0) {
-    const alarmStr = formatWakeTimeClock(diag.diagAlarmFiredAt);
-    return `上次測試（預定 ${targetStr}）：底層鬧鐘已於 ${alarmStr} 準時觸發，但喚醒視窗被系統攔截。請開啟上方「上層顯示權限」與「通知權限」後再測${diag.diagLastError ? `（${diag.diagLastError}）` : ''}。`;
-  }
-
-  if (nowMs < diag.diagTargetAt + 5000) {
-    return `已預約測試喚醒（預定 ${targetStr}），等待觸發中...`;
-  }
-
-  return `上次測試（預定 ${targetStr}）：已過預定時間但未收到 Android 鬧鐘喚醒廣播，代表閱讀器在深層待機時可能暫停了第三方鬧鐘喚醒。`;
-}
-
-export function syncNativeMorningWakeSchedule(
-  settings: PowerSettings
-): Promise<NativeWakeScheduleResult> {
-  const bridge = getNativeWakeBridge();
-  if (!bridge) {
-    return Promise.resolve({ status: 'unsupported' });
-  }
-
-  const shouldSchedule = settings.nightSleepEnabled && settings.nightSleepAutoWake;
-  if (shouldSchedule) {
-    if (typeof bridge.scheduleDailyWake !== 'function') {
-      return Promise.resolve({ status: 'unsupported' });
-    }
-    return new Promise((resolve) => {
-      try {
-        bridge.scheduleDailyWake?.(
-          settings.nightSleepEndHour,
-          0,
-          (res) => {
-            resolve({
-              status: 'scheduled',
-              exact: res?.exact !== false,
-              triggerAtMillis: res?.triggerAtMillis,
-            });
-          },
-          (err) => {
-            resolve({
-              status: 'error',
-              message: typeof err === 'string' ? err : '排程早上自動喚醒失敗',
-            });
-          }
-        );
-      } catch {
-        resolve({ status: 'error', message: '排程早上自動喚醒發生例外' });
-      }
-    });
-  }
-
-  if (typeof bridge.cancelDailyWake !== 'function') {
-    return Promise.resolve({ status: 'unsupported' });
-  }
-  return new Promise((resolve) => {
-    try {
-      bridge.cancelDailyWake?.(
-        () => resolve({ status: 'cancelled' }),
-        (err) =>
-          resolve({
-            status: 'error',
-            message: typeof err === 'string' ? err : '取消早上自動喚醒失敗',
-          })
-      );
-    } catch {
-      resolve({ status: 'error', message: '取消早上自動喚醒發生例外' });
-    }
-  });
-}
-
-export function scheduleNativeTestWake(delaySeconds = 60): Promise<NativeWakeScheduleResult> {
-  const bridge = getNativeWakeBridge();
-  if (!bridge || typeof bridge.scheduleTestWake !== 'function') {
-    return Promise.resolve({
-      status: 'unsupported',
-      message: '此功能需在最新版 Android 電子紙 APK 中執行，網頁瀏覽器無法喚醒硬體螢幕。',
-    });
-  }
-
-  // 立即釋放螢幕常亮鎖，方便使用者按電源鍵休眠並測試 60 秒後喚醒
-  applyHardwareKeepAwake(false);
-
-  return new Promise((resolve) => {
-    try {
-      bridge.scheduleTestWake?.(
-        delaySeconds,
-        (res) => {
-          const triggerAt = res?.triggerAtMillis ?? Date.now() + delaySeconds * 1000;
-          const timeLabel = formatWakeTimeClock(triggerAt);
-          const exactNote = res?.exact === false ? '（系統未開放精準鬧鐘，喚醒時間可能延遲數十秒）' : '';
-          resolve({
-            status: 'scheduled',
-            exact: res?.exact !== false,
-            triggerAtMillis: triggerAt,
-            message: `已預約 ${delaySeconds} 秒後自動喚醒（約 ${timeLabel}）${exactNote}。請現在按電源鍵讓閱讀器進入休眠，靜候測試是否自動亮屏回到時鐘。`,
-          });
-        },
-        (err) => {
-          resolve({
-            status: 'error',
-            message: typeof err === 'string' ? err : '預約測試喚醒失敗',
-          });
-        }
-      );
-    } catch {
-      resolve({ status: 'error', message: '預約測試喚醒時發生系統例外' });
-    }
-  });
-}
-
-
