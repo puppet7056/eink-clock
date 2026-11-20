@@ -12,10 +12,14 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
+import android.view.View;
 import android.view.WindowManager;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
@@ -58,20 +62,30 @@ public class EInkOAuthPlugin extends CordovaPlugin {
     private static final String PREF_AIRPLANE_ENABLED_BY_APP = "airplane_enabled_by_app";
     private static final String PREF_KEEP_SCREEN_ON = "keep_screen_on";
     private static final int REQ_BLUETOOTH_CONNECT = 4401;
+    // 每 4 分鐘透過 ON_AFTER_RELEASE 重設系統無操作休眠計時器，防止 BOOX 30 分鐘（甚至 5 分鐘）自動休眠
+    private static final long USER_ACTIVITY_PULSE_INTERVAL_MS = 4L * 60L * 1000L;
 
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private CallbackContext listenerCallbackContext = null;
     private CallbackContext timeTickCallbackContext = null;
     private String pendingCallbackUrl = null;
     private BroadcastReceiver timeTickReceiver = null;
     private boolean timeTickRegistered = false;
+    private boolean isInForeground = false;
+    private boolean keepScreenOnEnabled = true;
+    private long lastUserActivityPulseAt = 0L;
+    private PowerManager.WakeLock foregroundWakeLock = null;
+    private PowerManager.WakeLock pulseWakeLock = null;
+    private Runnable releasePulseRunnable = null;
 
     @Override
     public void initialize(CordovaInterface cordova, CordovaWebView webView) {
         super.initialize(cordova, webView);
         Activity activity = cordova.getActivity();
         if (activity != null) {
-            boolean savedKeepOn = getRadioPrefs().getBoolean(PREF_KEEP_SCREEN_ON, true);
-            applyKeepScreenOnFlag(activity, savedKeepOn);
+            isInForeground = true;
+            keepScreenOnEnabled = getRadioPrefs().getBoolean(PREF_KEEP_SCREEN_ON, true);
+            applyKeepScreenOnState(activity, keepScreenOnEnabled);
             registerTimeTickReceiver(activity);
             handlePossibleOAuthIntent(activity.getIntent());
         }
@@ -82,8 +96,9 @@ public class EInkOAuthPlugin extends CordovaPlugin {
         super.onResume(multitasking);
         Activity activity = cordova != null ? cordova.getActivity() : null;
         if (activity != null) {
-            boolean savedKeepOn = getRadioPrefs().getBoolean(PREF_KEEP_SCREEN_ON, true);
-            applyKeepScreenOnFlag(activity, savedKeepOn);
+            isInForeground = true;
+            keepScreenOnEnabled = getRadioPrefs().getBoolean(PREF_KEEP_SCREEN_ON, true);
+            applyKeepScreenOnState(activity, keepScreenOnEnabled);
             registerTimeTickReceiver(activity);
             // 回到前景時主動通知前端校正時間一次
             deliverTimeTick();
@@ -93,6 +108,8 @@ public class EInkOAuthPlugin extends CordovaPlugin {
     @Override
     public void onPause(boolean multitasking) {
         super.onPause(multitasking);
+        isInForeground = false;
+        releaseAllWakeLocks();
         Activity activity = cordova != null ? cordova.getActivity() : null;
         if (activity != null) {
             unregisterTimeTickReceiver(activity);
@@ -101,6 +118,8 @@ public class EInkOAuthPlugin extends CordovaPlugin {
 
     @Override
     public void onDestroy() {
+        isInForeground = false;
+        releaseAllWakeLocks();
         Activity activity = cordova != null ? cordova.getActivity() : null;
         if (activity != null) {
             unregisterTimeTickReceiver(activity);
@@ -117,19 +136,134 @@ public class EInkOAuthPlugin extends CordovaPlugin {
         handlePossibleOAuthIntent(intent);
     }
 
-    private void applyKeepScreenOnFlag(Activity activity, boolean keepOn) {
+    private void applyKeepScreenOnState(Activity activity, boolean keepOn) {
         if (activity == null) return;
         activity.runOnUiThread(() -> {
             try {
+                // 第一層：Android 主視窗常亮旗標
                 if (keepOn) {
                     activity.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 } else {
                     activity.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 }
+                // 第二層：DecorView 與 WebView 元件層級常亮旗標（避免全螢幕切換時旗標被覆寫）
+                View decorView = activity.getWindow().getDecorView();
+                if (decorView != null) {
+                    decorView.setKeepScreenOn(keepOn);
+                }
+                if (webView != null && webView.getView() != null) {
+                    webView.getView().setKeepScreenOn(keepOn);
+                }
             } catch (Exception ignored) {
                 // 忽略個別機型視窗旗標限制
             }
         });
+
+        // 第三層與第四層：前景 WakeLock 與使用者活動計時器重設（僅於前景且開啟常亮時持有，休眠或離場立即釋放）
+        if (keepOn && isInForeground) {
+            acquireForegroundWakeLock(activity);
+            pulseUserActivityTimerIfDue(activity, true);
+        } else {
+            releaseAllWakeLocks();
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private synchronized void acquireForegroundWakeLock(Activity activity) {
+        if (activity == null) return;
+        try {
+            if (foregroundWakeLock != null && foregroundWakeLock.isHeld()) {
+                return;
+            }
+            PowerManager pm =
+                    (PowerManager) activity.getApplicationContext().getSystemService(Context.POWER_SERVICE);
+            if (pm == null) return;
+            try {
+                foregroundWakeLock = pm.newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
+                        "tw.eink.clockdashboard:ForegroundKeepScreenOn"
+                );
+            } catch (Exception ignored) {
+                foregroundWakeLock = pm.newWakeLock(
+                        PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
+                        "tw.eink.clockdashboard:ForegroundDimKeepOn"
+                );
+            }
+            if (foregroundWakeLock != null) {
+                foregroundWakeLock.setReferenceCounted(false);
+                foregroundWakeLock.acquire();
+            }
+        } catch (Exception ignored) {
+            // 若個別機型拒絕 WakeLock 則維持視窗與 View 層常亮
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private synchronized void pulseUserActivityTimerIfDue(Activity activity, boolean force) {
+        if (activity == null || !isInForeground || !keepScreenOnEnabled) return;
+        long now = System.currentTimeMillis();
+        if (!force && (now - lastUserActivityPulseAt) < USER_ACTIVITY_PULSE_INTERVAL_MS) {
+            return;
+        }
+        try {
+            PowerManager pm =
+                    (PowerManager) activity.getApplicationContext().getSystemService(Context.POWER_SERVICE);
+            if (pm == null || !pm.isInteractive()) {
+                return;
+            }
+            // 透過短暫持有並釋放附帶 ON_AFTER_RELEASE 的喚醒鎖，觸發系統重設「無操作休眠計時器」回 0 分鐘
+            releasePulseWakeLockOnly();
+            PowerManager.WakeLock wl;
+            try {
+                wl = pm.newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
+                        "tw.eink.clockdashboard:UserActivityResetPulse"
+                );
+            } catch (Exception ignored) {
+                wl = pm.newWakeLock(
+                        PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
+                        "tw.eink.clockdashboard:UserActivityDimPulse"
+                );
+            }
+            wl.setReferenceCounted(false);
+            wl.acquire(1000L);
+            pulseWakeLock = wl;
+            lastUserActivityPulseAt = now;
+
+            releasePulseRunnable = this::releasePulseWakeLockOnly;
+            mainHandler.postDelayed(releasePulseRunnable, 200L);
+        } catch (Exception ignored) {
+            // 安全略過
+        }
+    }
+
+    private synchronized void releasePulseWakeLockOnly() {
+        if (releasePulseRunnable != null) {
+            mainHandler.removeCallbacks(releasePulseRunnable);
+            releasePulseRunnable = null;
+        }
+        try {
+            if (pulseWakeLock != null && pulseWakeLock.isHeld()) {
+                pulseWakeLock.release();
+            }
+        } catch (Exception ignored) {
+            // 忽略重複釋放例外
+        } finally {
+            pulseWakeLock = null;
+        }
+    }
+
+    private synchronized void releaseAllWakeLocks() {
+        releasePulseWakeLockOnly();
+        try {
+            if (foregroundWakeLock != null && foregroundWakeLock.isHeld()) {
+                foregroundWakeLock.release();
+            }
+        } catch (Exception ignored) {
+            // 忽略重複釋放例外
+        } finally {
+            foregroundWakeLock = null;
+        }
     }
 
     private void registerTimeTickReceiver(Activity activity) {
@@ -140,6 +274,12 @@ public class EInkOAuthPlugin extends CordovaPlugin {
                     @Override
                     public void onReceive(Context context, Intent intent) {
                         if (intent != null && Intent.ACTION_TIME_TICK.equals(intent.getAction())) {
+                            // 借用每分鐘系統推播，每 4 分鐘重設一次無操作休眠計時器（零額外計時器耗電）
+                            Activity act = cordova != null ? cordova.getActivity() : null;
+                            if (act != null && isInForeground && keepScreenOnEnabled) {
+                                acquireForegroundWakeLock(act);
+                                pulseUserActivityTimerIfDue(act, false);
+                            }
                             deliverTimeTick();
                         }
                     }
@@ -615,8 +755,9 @@ public class EInkOAuthPlugin extends CordovaPlugin {
         if ("setKeepScreenOn".equals(action)) {
             boolean keepOn = args.optBoolean(0, true);
             try {
+                keepScreenOnEnabled = keepOn;
                 getRadioPrefs().edit().putBoolean(PREF_KEEP_SCREEN_ON, keepOn).apply();
-                applyKeepScreenOnFlag(cordova.getActivity(), keepOn);
+                applyKeepScreenOnState(cordova.getActivity(), keepOn);
                 callbackContext.success();
             } catch (Exception e) {
                 callbackContext.error("Failed to update keep screen on: " + e.getMessage());
