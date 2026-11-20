@@ -5,8 +5,10 @@ import android.app.KeyguardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
+import android.provider.Settings;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
@@ -43,6 +45,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
     private static final String PREF_CIPHERTEXT = "rt_ct";
     private static final String PREF_IV = "rt_iv";
     private static final String PREF_ACCOUNT_EMAIL = "acct_email";
+    private static final int REQ_POST_NOTIFICATIONS = 4301;
 
     private CallbackContext listenerCallbackContext = null;
     private String pendingCallbackUrl = null;
@@ -332,6 +335,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             int minute = args.optInt(1, 0);
             try {
                 Activity activity = cordova.getActivity();
+                maybeRequestPostNotifications(activity);
                 applyWakeWindowFlags(activity, true, false);
                 JSONObject res = EInkWakeReceiver.scheduleDailyWake(activity, hour, minute);
                 callbackContext.success(res);
@@ -357,6 +361,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             int delaySeconds = args.optInt(0, 60);
             try {
                 Activity activity = cordova.getActivity();
+                maybeRequestPostNotifications(activity);
                 applyWakeWindowFlags(activity, true, false);
                 JSONObject res = EInkWakeReceiver.scheduleTestWake(activity, delaySeconds);
                 callbackContext.success(res);
@@ -376,6 +381,63 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             return true;
         }
 
+        if ("openWakePermissionSettings".equals(action)) {
+            String target = args.optString(0, "overlay");
+            try {
+                openWakePermissionSettings(cordova.getActivity(), target);
+                callbackContext.success();
+            } catch (Exception e) {
+                callbackContext.error("Failed to open settings: " + e.getMessage());
+            }
+            return true;
+        }
+
         return false;
+    }
+
+    private void maybeRequestPostNotifications(Activity activity) {
+        if (activity == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            try {
+                String perm = "android.permission.POST_NOTIFICATIONS";
+                if (activity.checkSelfPermission(perm) != PackageManager.PERMISSION_GRANTED) {
+                    cordova.requestPermission(this, REQ_POST_NOTIFICATIONS, perm);
+                }
+            } catch (Exception ignored) {
+                // ignore
+            }
+        }
+    }
+
+    private void openWakePermissionSettings(Activity activity, String target) {
+        if (activity == null) return;
+        String pkg = activity.getPackageName();
+        Uri pkgUri = Uri.parse("package:" + pkg);
+        Intent intent = null;
+
+        if ("overlay".equals(target) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, pkgUri);
+        } else if ("exact_alarm".equals(target) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            intent = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, pkgUri);
+        } else if ("fullscreen".equals(target) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            intent = new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, pkgUri);
+        } else if ("notifications".equals(target) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+            intent.putExtra(Settings.EXTRA_APP_PACKAGE, pkg);
+        }
+
+        if (intent != null) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                activity.startActivity(intent);
+                return;
+            } catch (Exception ignored) {
+                // Fall back to app details page below
+            }
+        }
+
+        Intent fallback = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri);
+        fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        activity.startActivity(fallback);
     }
 }

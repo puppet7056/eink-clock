@@ -84,15 +84,20 @@ import { parseGoogleICalEvents } from './utils/icalParser';
 import {
   applyHardwareKeepAwake,
   evaluatePowerState,
+  fetchNativeWakeDiagnostics,
+  formatWakeDiagnosticSummary,
   loadPowerSettings,
   MAX_BATTERY_POWER_PRESET,
+  openNativeWakePermissionSettings,
   savePowerSettings,
   scheduleNativeTestWake,
   shouldTriggerGhostCleanAt,
   syncNativeMorningWakeSchedule,
   type GhostCleanIntervalMinutes,
+  type NativeWakeDiagnostics,
   type PowerSettings,
   type SyncIntervalMinutes,
+  type WakePermissionTarget,
 } from './utils/powerSettings';
 import { getTaiwanDayInfo } from './utils/taiwanCalendar';
 
@@ -344,6 +349,7 @@ export default function App() {
     status: 'idle' | 'loading' | 'scheduled' | 'error';
     message: string;
   }>({ status: 'idle', message: '' });
+  const [wakeDiag, setWakeDiag] = useState<NativeWakeDiagnostics | null>(null);
   const [draftGithubRepo, setDraftGithubRepo] = useState<string>(githubRepo);
   const [updateCheckState, setUpdateCheckState] = useState<{
     status: 'idle' | 'loading' | 'result' | 'error';
@@ -1048,6 +1054,7 @@ export default function App() {
     setDraftBacklight(backlight);
     setDraftPowerSettings(powerSettings);
     setTestWakeState({ status: 'idle', message: '' });
+    void fetchNativeWakeDiagnostics().then((diag) => setWakeDiag(diag));
     setDraftGithubRepo(githubRepo);
     setUpdateCheckState({ status: 'idle' });
     setShowCwaKey(false);
@@ -1066,6 +1073,30 @@ export default function App() {
     githubRepo,
   ]);
 
+  // 設定頁開啟期間，若從系統權限頁或休眠喚醒回來，自動刷新喚醒權限與上次測試診斷
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+    const refreshDiag = () => {
+      if (document.hidden) return;
+      void fetchNativeWakeDiagnostics().then((diag) => setWakeDiag(diag));
+    };
+    document.addEventListener('visibilitychange', refreshDiag);
+    window.addEventListener('eink-cordova-ready', refreshDiag);
+    return () => {
+      document.removeEventListener('visibilitychange', refreshDiag);
+      window.removeEventListener('eink-cordova-ready', refreshDiag);
+    };
+  }, [isSettingsOpen]);
+
+  const handleOpenWakePermission = async (target: WakePermissionTarget) => {
+    await openNativeWakePermissionSettings(target);
+  };
+
+  const handleRefreshWakeDiag = async () => {
+    const diag = await fetchNativeWakeDiagnostics();
+    setWakeDiag(diag);
+  };
+
   const handleScheduleTestWake = async () => {
     setTestWakeState({ status: 'loading', message: '正在向 Android 系統預約 60 秒後自動喚醒...' });
     const result = await scheduleNativeTestWake(60);
@@ -1076,6 +1107,7 @@ export default function App() {
           result.message ||
           '已預約 60 秒後自動喚醒，請立即按電源鍵讓閱讀器進入休眠並靜候測試。',
       });
+      void fetchNativeWakeDiagnostics().then((diag) => setWakeDiag(diag));
     } else {
       setTestWakeState({
         status: 'error',
@@ -2181,8 +2213,74 @@ export default function App() {
                         </p>
                       )}
 
+                      {wakeDiag && (
+                        <div className="flex flex-col gap-1.5 px-2.5 py-2 rounded-[6px] border border-[var(--border-subtle)] bg-[var(--bg-color)]">
+                          <div className="flex flex-wrap items-center justify-between gap-1.5 text-[length:calc(11.5px*var(--fs))] font-extrabold font-num">
+                            <span>
+                              權限檢查（API {wakeDiag.sdkInt}）：上層顯示
+                              {wakeDiag.canDrawOverlays ? '✓' : '✗'} · 通知
+                              {wakeDiag.notificationsEnabled && wakeDiag.canFullScreenIntent
+                                ? '✓'
+                                : '✗'}{' '}
+                              · 精準鬧鐘{wakeDiag.canExactAlarm ? '✓' : '✗'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={handleRefreshWakeDiag}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 text-[length:calc(11px*var(--fs))] font-extrabold border border-[var(--border-color)] rounded bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer"
+                            >
+                              <RefreshCw className="w-[0.95em] h-[0.95em]" />
+                              重新檢查
+                            </button>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {!wakeDiag.canDrawOverlays && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenWakePermission('overlay')}
+                                className="px-2.5 py-1 text-[length:calc(11.5px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--surface-active)] text-[var(--fg-inverse)] cursor-pointer"
+                              >
+                                開啟「顯示在其他應用程式上層」（Android 10+ 必開）
+                              </button>
+                            )}
+                            {!wakeDiag.notificationsEnabled && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenWakePermission('notifications')}
+                                className="px-2.5 py-1 text-[length:calc(11.5px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer"
+                              >
+                                開啟通知權限
+                              </button>
+                            )}
+                            {!wakeDiag.canFullScreenIntent && wakeDiag.sdkInt >= 34 && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenWakePermission('fullscreen')}
+                                className="px-2.5 py-1 text-[length:calc(11.5px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer"
+                              >
+                                開啟全螢幕喚醒權限
+                              </button>
+                            )}
+                            {!wakeDiag.canExactAlarm && wakeDiag.sdkInt >= 31 && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenWakePermission('exact_alarm')}
+                                className="px-2.5 py-1 text-[length:calc(11.5px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer"
+                              >
+                                開啟精準鬧鐘權限
+                              </button>
+                            )}
+                          </div>
+
+                          <p className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.45] font-num">
+                            {formatWakeDiagnosticSummary(wakeDiag)}
+                          </p>
+                        </div>
+                      )}
+
                       <p className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.45]">
-                        註：僅在「待機休眠（未關機）」狀態下有效；若 BOOX 等機型有開啟系統「應用凍結」，請先將本時鐘取消凍結以免系統攔截定時喚醒。
+                        註：Android 10 以上（含 BOOX 10.3）會攔截背景直接喚醒視窗；若測試沒亮屏，請先點擊上方「開啟顯示在其他應用程式上層」並確認通知已允許後再重測，下方會顯示實際觸發診斷。
                       </p>
                     </div>
                   )}

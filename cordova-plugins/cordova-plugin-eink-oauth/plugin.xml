@@ -2,7 +2,7 @@
 <plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
         xmlns:android="http://schemas.android.com/apk/res/android"
         id="cordova-plugin-eink-oauth"
-        version="1.1.0">
+        version="1.2.0">
   <name>EInkOAuth</name>
   <description>Native Android system-browser OAuth 2.0 PKCE, Keystore token persistence, and AlarmManager deep-sleep auto-wake plugin for E-Ink Clock Dashboard</description>
   <license>MIT</license>
@@ -26,6 +26,9 @@
       <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
       <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
       <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
+      <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+      <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+      <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     </config-file>
 
     <config-file target="AndroidManifest.xml" parent="/manifest/application/activity[@android:name='MainActivity']">
@@ -38,6 +41,17 @@
     </config-file>
 
     <config-file target="AndroidManifest.xml" parent="/manifest/application">
+      <activity
+        android:name="tw.eink.clockdashboard.EInkWakeActivity"
+        android:exported="false"
+        android:excludeFromRecents="true"
+        android:launchMode="singleInstance"
+        android:taskAffinity=""
+        android:showWhenLocked="true"
+        android:showOnLockScreen="true"
+        android:turnScreenOn="true"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen" />
+
       <receiver
         android:name="tw.eink.clockdashboard.EInkWakeReceiver"
         android:enabled="true"
@@ -52,5 +66,6 @@
 
     <source-file src="src/android/EInkOAuthPlugin.java" target-dir="src/tw/eink/clockdashboard" />
     <source-file src="src/android/EInkWakeReceiver.java" target-dir="src/tw/eink/clockdashboard" />
+    <source-file src="src/android/EInkWakeActivity.java" target-dir="src/tw/eink/clockdashboard" />
   </platform>
 </plugin>

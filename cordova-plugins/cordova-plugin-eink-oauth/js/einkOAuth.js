@@ -44,6 +44,11 @@ var EInkOAuth = {
   getWakeStatus: function (onSuccess, onError) {
     exec(onSuccess || function () {}, onError || function () {}, 'EInkOAuth', 'getWakeStatus', []);
   },
+  openWakePermissionSettings: function (target, onSuccess, onError) {
+    exec(onSuccess || function () {}, onError || function () {}, 'EInkOAuth', 'openWakePermissionSettings', [
+      target || 'overlay',
+    ]);
+  },
 };
 
 module.exports = EInkOAuth;

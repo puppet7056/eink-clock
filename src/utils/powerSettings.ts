@@ -202,6 +202,33 @@ export function applyHardwareKeepAwake(shouldKeepAwake: boolean): 'applied' | 'u
   return 'unsupported';
 }
 
+export interface NativeWakeDiagnostics {
+  sdkInt: number;
+  manufacturer: string;
+  model: string;
+  enabled: boolean;
+  hour: number;
+  minute: number;
+  nextTriggerMillis: number;
+  canExactAlarm: boolean;
+  canDrawOverlays: boolean;
+  notificationsEnabled: boolean;
+  canFullScreenIntent: boolean;
+  ignoringBatteryOpt: boolean;
+  diagKind: string;
+  diagScheduledAt: number;
+  diagTargetAt: number;
+  diagAlarmFiredAt: number;
+  diagWakeActivityAt: number;
+  diagWakeSource: string;
+  diagInteractiveBefore: boolean;
+  diagInteractiveAfter: boolean;
+  diagExact: boolean;
+  diagLastError: string;
+}
+
+export type WakePermissionTarget = 'overlay' | 'notifications' | 'fullscreen' | 'exact_alarm';
+
 interface NativeWakeBridge {
   scheduleDailyWake?: (
     hour: number,
@@ -218,6 +245,15 @@ interface NativeWakeBridge {
       delaySeconds?: number;
       triggerAtMillis?: number;
     }) => void,
+    onError?: (err: unknown) => void
+  ) => void;
+  getWakeStatus?: (
+    onSuccess?: (res: Partial<NativeWakeDiagnostics>) => void,
+    onError?: (err: unknown) => void
+  ) => void;
+  openWakePermissionSettings?: (
+    target: WakePermissionTarget,
+    onSuccess?: () => void,
     onError?: (err: unknown) => void
   ) => void;
 }
@@ -238,12 +274,105 @@ function getNativeWakeBridge(): NativeWakeBridge | null {
   }
 }
 
-function formatWakeTimeClock(millis: number): string {
+export function formatWakeTimeClock(millis: number): string {
   const d = new Date(millis);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   const ss = String(d.getSeconds()).padStart(2, '0');
   return `${hh}:${mm}:${ss}`;
+}
+
+export function fetchNativeWakeDiagnostics(): Promise<NativeWakeDiagnostics | null> {
+  const bridge = getNativeWakeBridge();
+  if (!bridge || typeof bridge.getWakeStatus !== 'function') {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    try {
+      bridge.getWakeStatus?.(
+        (res) => {
+          if (!res || typeof res !== 'object') {
+            resolve(null);
+            return;
+          }
+          resolve({
+            sdkInt: Number(res.sdkInt) || 0,
+            manufacturer: String(res.manufacturer || ''),
+            model: String(res.model || ''),
+            enabled: Boolean(res.enabled),
+            hour: Number(res.hour) || 7,
+            minute: Number(res.minute) || 0,
+            nextTriggerMillis: Number(res.nextTriggerMillis) || 0,
+            canExactAlarm: res.canExactAlarm !== false,
+            canDrawOverlays: Boolean(res.canDrawOverlays),
+            notificationsEnabled: res.notificationsEnabled !== false,
+            canFullScreenIntent: res.canFullScreenIntent !== false,
+            ignoringBatteryOpt: Boolean(res.ignoringBatteryOpt),
+            diagKind: String(res.diagKind || ''),
+            diagScheduledAt: Number(res.diagScheduledAt) || 0,
+            diagTargetAt: Number(res.diagTargetAt) || 0,
+            diagAlarmFiredAt: Number(res.diagAlarmFiredAt) || 0,
+            diagWakeActivityAt: Number(res.diagWakeActivityAt) || 0,
+            diagWakeSource: String(res.diagWakeSource || ''),
+            diagInteractiveBefore: Boolean(res.diagInteractiveBefore),
+            diagInteractiveAfter: Boolean(res.diagInteractiveAfter),
+            diagExact: res.diagExact !== false,
+            diagLastError: String(res.diagLastError || ''),
+          });
+        },
+        () => resolve(null)
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+export function openNativeWakePermissionSettings(target: WakePermissionTarget): Promise<boolean> {
+  const bridge = getNativeWakeBridge();
+  if (!bridge || typeof bridge.openWakePermissionSettings !== 'function') {
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    try {
+      bridge.openWakePermissionSettings?.(
+        target,
+        () => resolve(true),
+        () => resolve(false)
+      );
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+export function formatWakeDiagnosticSummary(diag: NativeWakeDiagnostics): string {
+  if (!diag.diagTargetAt) {
+    return '尚未執行過 1 分鐘喚醒測試。建議先確認「上層顯示」與「通知」已開啟，再點測試。';
+  }
+
+  const targetStr = formatWakeTimeClock(diag.diagTargetAt);
+  const nowMs = Date.now();
+
+  if (diag.diagWakeActivityAt > 0) {
+    const actStr = formatWakeTimeClock(diag.diagWakeActivityAt);
+    const alarmStr = diag.diagAlarmFiredAt > 0 ? formatWakeTimeClock(diag.diagAlarmFiredAt) : actStr;
+    const screenState = diag.diagInteractiveAfter ? '螢幕已點亮' : '系統未回報螢幕點亮';
+    const pathLabel = diag.diagWakeSource ? `（路徑：${diag.diagWakeSource}）` : '';
+    return `上次測試（預定 ${targetStr}）：鬧鐘於 ${alarmStr} 觸發 → 喚醒視窗於 ${actStr} 啟動 → ${screenState}${pathLabel}${diag.diagLastError ? `｜備註：${diag.diagLastError}` : ''}`;
+  }
+
+  if (diag.diagAlarmFiredAt > 0) {
+    const alarmStr = formatWakeTimeClock(diag.diagAlarmFiredAt);
+    return `上次測試（預定 ${targetStr}）：底層鬧鐘已於 ${alarmStr} 準時觸發，但喚醒視窗被系統攔截。請開啟上方「上層顯示權限」與「通知權限」後再測${diag.diagLastError ? `（${diag.diagLastError}）` : ''}。`;
+  }
+
+  if (nowMs < diag.diagTargetAt + 5000) {
+    return `已預約測試喚醒（預定 ${targetStr}），等待觸發中...`;
+  }
+
+  return `上次測試（預定 ${targetStr}）：已過預定時間但未收到 Android 鬧鐘喚醒廣播，代表閱讀器在深層待機時可能暫停了第三方鬧鐘喚醒。`;
 }
 
 export function syncNativeMorningWakeSchedule(
@@ -342,4 +471,5 @@ export function scheduleNativeTestWake(delaySeconds = 60): Promise<NativeWakeSch
     }
   });
 }
+
 
