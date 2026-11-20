@@ -295,9 +295,28 @@ export interface NightRadioResult {
   summary?: string;
 }
 
+export interface KeepAwakeStatus {
+  sdkInt: number;
+  canWriteSettings: boolean;
+  keepScreenOnEnabled: boolean;
+  timeoutOverrideActive: boolean;
+  currentScreenOffTimeoutMs: number;
+  savedOriginalTimeoutMs: number;
+  wakeLockHeld: boolean;
+  windowFlagActive: boolean;
+}
+
 interface NativeRadioBridge {
   setKeepScreenOn?: (
     keepOn: boolean,
+    onSuccess?: () => void,
+    onError?: (err: unknown) => void
+  ) => void;
+  getKeepAwakeStatus?: (
+    onSuccess?: (res: Partial<KeepAwakeStatus>) => void,
+    onError?: (err: unknown) => void
+  ) => void;
+  openWriteSettingsPermission?: (
     onSuccess?: () => void,
     onError?: (err: unknown) => void
   ) => void;
@@ -331,6 +350,65 @@ function getNativeRadioBridge(): NativeRadioBridge | null {
   } catch {
     return null;
   }
+}
+
+export function formatTimeoutMsZhTw(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '未知';
+  if (ms >= 2147483000) return '永不逾時（約 24 天）';
+  if (ms >= 3600_000) {
+    const hrs = Math.round((ms / 3600_000) * 10) / 10;
+    return `${hrs} 小時`;
+  }
+  if (ms >= 60_000) {
+    const mins = Math.round(ms / 60_000);
+    return `${mins} 分鐘`;
+  }
+  return `${Math.max(1, Math.round(ms / 1000))} 秒`;
+}
+
+export function getNativeKeepAwakeStatus(): Promise<KeepAwakeStatus | null> {
+  const bridge = getNativeRadioBridge();
+  if (!bridge || typeof bridge.getKeepAwakeStatus !== 'function') {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    try {
+      bridge.getKeepAwakeStatus?.(
+        (res) => {
+          resolve({
+            sdkInt: Number(res?.sdkInt ?? 0),
+            canWriteSettings: Boolean(res?.canWriteSettings),
+            keepScreenOnEnabled: Boolean(res?.keepScreenOnEnabled),
+            timeoutOverrideActive: Boolean(res?.timeoutOverrideActive),
+            currentScreenOffTimeoutMs: Number(res?.currentScreenOffTimeoutMs ?? -1),
+            savedOriginalTimeoutMs: Number(res?.savedOriginalTimeoutMs ?? -1),
+            wakeLockHeld: Boolean(res?.wakeLockHeld),
+            windowFlagActive: Boolean(res?.windowFlagActive),
+          });
+        },
+        () => resolve(null)
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+export function openNativeWriteSettingsPermission(): Promise<boolean> {
+  const bridge = getNativeRadioBridge();
+  if (!bridge || typeof bridge.openWriteSettingsPermission !== 'function') {
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    try {
+      bridge.openWriteSettingsPermission?.(
+        () => resolve(true),
+        () => resolve(false)
+      );
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
 export function subscribeNativeTimeTick(onTick: () => void): () => void {

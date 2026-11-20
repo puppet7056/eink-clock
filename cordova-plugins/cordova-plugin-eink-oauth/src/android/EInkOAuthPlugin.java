@@ -61,9 +61,15 @@ public class EInkOAuthPlugin extends CordovaPlugin {
     private static final String PREF_BT_DISABLED_BY_APP = "bt_disabled_by_app";
     private static final String PREF_AIRPLANE_ENABLED_BY_APP = "airplane_enabled_by_app";
     private static final String PREF_KEEP_SCREEN_ON = "keep_screen_on";
+    private static final String PREF_TIMEOUT_OVERRIDDEN = "sys_timeout_overridden";
+    private static final String PREF_SAVED_SCREEN_OFF_TIMEOUT = "sys_timeout_saved_ms";
     private static final int REQ_BLUETOOTH_CONNECT = 4401;
-    // 每 4 分鐘透過 ON_AFTER_RELEASE 重設系統無操作休眠計時器，防止 BOOX 30 分鐘（甚至 5 分鐘）自動休眠
-    private static final long USER_ACTIVITY_PULSE_INTERVAL_MS = 4L * 60L * 1000L;
+    // 每 2 分鐘（保留 10 秒容錯）透過 ON_AFTER_RELEASE 重設系統無操作計時器，避免 5 分鐘測試被毫秒誤差跳過
+    private static final long USER_ACTIVITY_PULSE_INTERVAL_MS = 2L * 60L * 1000L - 10_000L;
+    // 接管系統 screen_off_timeout 的常亮數值：優先 Integer.MAX_VALUE（約 24.8 天），若機型拒收則改寫 24 小時
+    private static final int KEEP_AWAKE_TIMEOUT_PRIMARY_MS = Integer.MAX_VALUE;
+    private static final int KEEP_AWAKE_TIMEOUT_FALLBACK_MS = 24 * 60 * 60 * 1000;
+    private static final int DEFAULT_RESTORE_TIMEOUT_MS = 30 * 60 * 1000;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private CallbackContext listenerCallbackContext = null;
@@ -112,6 +118,8 @@ public class EInkOAuthPlugin extends CordovaPlugin {
         releaseAllWakeLocks();
         Activity activity = cordova != null ? cordova.getActivity() : null;
         if (activity != null) {
+            // 離開前景時立即還原使用者原本的系統休眠逾時（例如 30 分鐘），不影響其他應用程式與待機休眠
+            restoreSystemTimeoutIfOverridden(activity);
             unregisterTimeTickReceiver(activity);
         }
     }
@@ -122,6 +130,7 @@ public class EInkOAuthPlugin extends CordovaPlugin {
         releaseAllWakeLocks();
         Activity activity = cordova != null ? cordova.getActivity() : null;
         if (activity != null) {
+            restoreSystemTimeoutIfOverridden(activity);
             unregisterTimeTickReceiver(activity);
         }
         super.onDestroy();
@@ -159,13 +168,190 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             }
         });
 
-        // 第三層與第四層：前景 WakeLock 與使用者活動計時器重設（僅於前景且開啟常亮時持有，休眠或離場立即釋放）
+        // 第三層～第五層：系統休眠逾時動態接管（突破 BOOX 強制休眠）＋前景 WakeLock ＋每 2 分鐘重設無操作計時器
         if (keepOn && isInForeground) {
+            applySystemTimeoutOverride(activity);
             acquireForegroundWakeLock(activity);
             pulseUserActivityTimerIfDue(activity, true);
         } else {
             releaseAllWakeLocks();
+            restoreSystemTimeoutIfOverridden(activity);
         }
+    }
+
+    private boolean canWriteSystemSettings(Context appCtx) {
+        if (appCtx == null) return false;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true;
+        }
+        try {
+            return Settings.System.canWrite(appCtx);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private int readCurrentScreenOffTimeoutMs(Context appCtx) {
+        if (appCtx == null) return -1;
+        try {
+            return Settings.System.getInt(
+                    appCtx.getContentResolver(),
+                    Settings.System.SCREEN_OFF_TIMEOUT,
+                    -1
+            );
+        } catch (Exception ignored) {
+            return -1;
+        }
+    }
+
+    private synchronized void applySystemTimeoutOverride(Activity activity) {
+        if (activity == null || !isInForeground || !keepScreenOnEnabled) return;
+        Context appCtx = activity.getApplicationContext();
+        if (!canWriteSystemSettings(appCtx)) return;
+        try {
+            SharedPreferences prefs = getRadioPrefs();
+            int currentMs = readCurrentScreenOffTimeoutMs(appCtx);
+            boolean alreadyOverridden = prefs.getBoolean(PREF_TIMEOUT_OVERRIDDEN, false);
+
+            // 首次接管時先保存使用者原本的系統自動休眠時間，絕不把 24 天常亮值誤存為原設定
+            if (!alreadyOverridden) {
+                int toSave = (currentMs > 0 && currentMs < KEEP_AWAKE_TIMEOUT_FALLBACK_MS)
+                        ? currentMs
+                        : DEFAULT_RESTORE_TIMEOUT_MS;
+                prefs.edit().putInt(PREF_SAVED_SCREEN_OFF_TIMEOUT, toSave).apply();
+            }
+
+            if (currentMs >= KEEP_AWAKE_TIMEOUT_FALLBACK_MS) {
+                if (!alreadyOverridden) {
+                    prefs.edit().putBoolean(PREF_TIMEOUT_OVERRIDDEN, true).apply();
+                }
+                return;
+            }
+
+            // 優先寫入 Integer.MAX_VALUE（約 24.8 天）；若個別機型拒收則退回 24 小時（86400000 ms）
+            boolean written = Settings.System.putInt(
+                    appCtx.getContentResolver(),
+                    Settings.System.SCREEN_OFF_TIMEOUT,
+                    KEEP_AWAKE_TIMEOUT_PRIMARY_MS
+            );
+            int verifyMs = readCurrentScreenOffTimeoutMs(appCtx);
+            if (!written || verifyMs < KEEP_AWAKE_TIMEOUT_FALLBACK_MS) {
+                Settings.System.putInt(
+                        appCtx.getContentResolver(),
+                        Settings.System.SCREEN_OFF_TIMEOUT,
+                        KEEP_AWAKE_TIMEOUT_FALLBACK_MS
+                );
+                verifyMs = readCurrentScreenOffTimeoutMs(appCtx);
+            }
+
+            if (verifyMs >= KEEP_AWAKE_TIMEOUT_FALLBACK_MS) {
+                prefs.edit().putBoolean(PREF_TIMEOUT_OVERRIDDEN, true).apply();
+            }
+        } catch (Exception ignored) {
+            // 若個別韌體限制系統設定寫入，仍維持視窗旗標與 WakeLock 防休眠
+        }
+    }
+
+    private synchronized void restoreSystemTimeoutIfOverridden(Activity activity) {
+        if (activity == null) return;
+        Context appCtx = activity.getApplicationContext();
+        try {
+            SharedPreferences prefs = getRadioPrefs();
+            if (!prefs.getBoolean(PREF_TIMEOUT_OVERRIDDEN, false)) {
+                return;
+            }
+            if (!canWriteSystemSettings(appCtx)) {
+                prefs.edit().putBoolean(PREF_TIMEOUT_OVERRIDDEN, false).apply();
+                return;
+            }
+            int savedMs = prefs.getInt(PREF_SAVED_SCREEN_OFF_TIMEOUT, DEFAULT_RESTORE_TIMEOUT_MS);
+            if (savedMs <= 0 || savedMs >= KEEP_AWAKE_TIMEOUT_FALLBACK_MS) {
+                savedMs = DEFAULT_RESTORE_TIMEOUT_MS;
+            }
+            Settings.System.putInt(
+                    appCtx.getContentResolver(),
+                    Settings.System.SCREEN_OFF_TIMEOUT,
+                    savedMs
+            );
+            prefs.edit().putBoolean(PREF_TIMEOUT_OVERRIDDEN, false).apply();
+        } catch (Exception ignored) {
+            // 安全略過
+        }
+    }
+
+    private void openWriteSettingsPermission(Activity activity) {
+        if (activity == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Intent intent = new Intent(
+                    Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                    Uri.parse("package:" + activity.getPackageName())
+            );
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                activity.startActivity(intent);
+                return;
+            } catch (Exception ignored) {
+                // 部分客製系統不接受帶 package URI，改開總表頁
+            }
+            Intent listIntent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
+            listIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                activity.startActivity(listIntent);
+                return;
+            } catch (Exception ignored) {
+                // 繼續退回應用程式資訊頁
+            }
+        }
+        Intent appInfo = new Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:" + activity.getPackageName())
+        );
+        appInfo.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            activity.startActivity(appInfo);
+        } catch (Exception ignored) {
+            Intent root = new Intent(Settings.ACTION_SETTINGS);
+            root.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            activity.startActivity(root);
+        }
+    }
+
+    private JSONObject buildKeepAwakeStatus(Activity activity) throws JSONException {
+        JSONObject res = new JSONObject();
+        res.put("sdkInt", Build.VERSION.SDK_INT);
+        if (activity == null) {
+            res.put("canWriteSettings", false);
+            res.put("keepScreenOnEnabled", keepScreenOnEnabled);
+            res.put("timeoutOverrideActive", false);
+            res.put("currentScreenOffTimeoutMs", -1);
+            res.put("savedOriginalTimeoutMs", -1);
+            res.put("wakeLockHeld", false);
+            res.put("windowFlagActive", false);
+            return res;
+        }
+        Context appCtx = activity.getApplicationContext();
+        SharedPreferences prefs = getRadioPrefs();
+        boolean canWrite = canWriteSystemSettings(appCtx);
+        boolean overrideActive = prefs.getBoolean(PREF_TIMEOUT_OVERRIDDEN, false);
+        int currentMs = readCurrentScreenOffTimeoutMs(appCtx);
+        int savedMs = prefs.getInt(PREF_SAVED_SCREEN_OFF_TIMEOUT, -1);
+        boolean wlHeld = foregroundWakeLock != null && foregroundWakeLock.isHeld();
+        boolean flagActive = false;
+        try {
+            int flags = activity.getWindow().getAttributes().flags;
+            flagActive = (flags & WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0;
+        } catch (Exception ignored) {
+            flagActive = false;
+        }
+
+        res.put("canWriteSettings", canWrite);
+        res.put("keepScreenOnEnabled", keepScreenOnEnabled);
+        res.put("timeoutOverrideActive", overrideActive);
+        res.put("currentScreenOffTimeoutMs", currentMs);
+        res.put("savedOriginalTimeoutMs", savedMs);
+        res.put("wakeLockHeld", wlHeld);
+        res.put("windowFlagActive", flagActive);
+        return res;
     }
 
     @SuppressWarnings("deprecation")
@@ -180,21 +366,28 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             if (pm == null) return;
             try {
                 foregroundWakeLock = pm.newWakeLock(
-                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
-                        "tw.eink.clockdashboard:ForegroundKeepScreenOn"
+                        PowerManager.FULL_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
+                        "tw.eink.clockdashboard:ForegroundFullKeepOn"
                 );
             } catch (Exception ignored) {
-                foregroundWakeLock = pm.newWakeLock(
-                        PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
-                        "tw.eink.clockdashboard:ForegroundDimKeepOn"
-                );
+                try {
+                    foregroundWakeLock = pm.newWakeLock(
+                            PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
+                            "tw.eink.clockdashboard:ForegroundKeepScreenOn"
+                    );
+                } catch (Exception ignored2) {
+                    foregroundWakeLock = pm.newWakeLock(
+                            PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
+                            "tw.eink.clockdashboard:ForegroundDimKeepOn"
+                    );
+                }
             }
             if (foregroundWakeLock != null) {
                 foregroundWakeLock.setReferenceCounted(false);
                 foregroundWakeLock.acquire();
             }
         } catch (Exception ignored) {
-            // 若個別機型拒絕 WakeLock 則維持視窗與 View 層常亮
+            // 若個別機型拒絕 WakeLock 則維持系統逾時接管與視窗層常亮
         }
     }
 
@@ -216,13 +409,13 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             PowerManager.WakeLock wl;
             try {
                 wl = pm.newWakeLock(
-                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
-                        "tw.eink.clockdashboard:UserActivityResetPulse"
+                        PowerManager.FULL_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
+                        "tw.eink.clockdashboard:UserActivityFullPulse"
                 );
             } catch (Exception ignored) {
                 wl = pm.newWakeLock(
-                        PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
-                        "tw.eink.clockdashboard:UserActivityDimPulse"
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
+                        "tw.eink.clockdashboard:UserActivityResetPulse"
                 );
             }
             wl.setReferenceCounted(false);
@@ -274,9 +467,10 @@ public class EInkOAuthPlugin extends CordovaPlugin {
                     @Override
                     public void onReceive(Context context, Intent intent) {
                         if (intent != null && Intent.ACTION_TIME_TICK.equals(intent.getAction())) {
-                            // 借用每分鐘系統推播，每 4 分鐘重設一次無操作休眠計時器（零額外計時器耗電）
+                            // 借用每分鐘系統推播，巡檢系統休眠逾時接管狀態與重設無操作計時器（零額外計時器耗電）
                             Activity act = cordova != null ? cordova.getActivity() : null;
                             if (act != null && isInForeground && keepScreenOnEnabled) {
+                                applySystemTimeoutOverride(act);
                                 acquireForegroundWakeLock(act);
                                 pulseUserActivityTimerIfDue(act, false);
                             }
@@ -761,6 +955,25 @@ public class EInkOAuthPlugin extends CordovaPlugin {
                 callbackContext.success();
             } catch (Exception e) {
                 callbackContext.error("Failed to update keep screen on: " + e.getMessage());
+            }
+            return true;
+        }
+
+        if ("getKeepAwakeStatus".equals(action)) {
+            try {
+                callbackContext.success(buildKeepAwakeStatus(cordova.getActivity()));
+            } catch (Exception e) {
+                callbackContext.error("Failed to read keep awake status: " + e.getMessage());
+            }
+            return true;
+        }
+
+        if ("openWriteSettingsPermission".equals(action)) {
+            try {
+                openWriteSettingsPermission(cordova.getActivity());
+                callbackContext.success();
+            } catch (Exception e) {
+                callbackContext.error("Failed to open write settings page: " + e.getMessage());
             }
             return true;
         }

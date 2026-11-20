@@ -2,9 +2,9 @@
 <plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
         xmlns:android="http://schemas.android.com/apk/res/android"
         id="cordova-plugin-eink-oauth"
-        version="1.3.2">
+        version="1.4.0">
   <name>EInkOAuth</name>
-  <description>Native Android system-browser OAuth 2.0 PKCE, Keystore token persistence, foreground WakeLock keep-screen-on, and night-mode wireless power control for E-Ink Clock Dashboard</description>
+  <description>Native Android system-browser OAuth 2.0 PKCE, Keystore token persistence, system-timeout &amp; WakeLock keep-screen-on, and night-mode wireless power control for E-Ink Clock Dashboard</description>
   <license>MIT</license>
 
   <preference name="URL_SCHEME" default="tw.eink.clockdashboard.oauth" />
@@ -23,6 +23,7 @@
 
     <config-file target="AndroidManifest.xml" parent="/manifest">
       <uses-permission android:name="android.permission.WAKE_LOCK" />
+      <uses-permission android:name="android.permission.WRITE_SETTINGS" />
       <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
       <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
       <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />

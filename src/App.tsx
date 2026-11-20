@@ -86,13 +86,17 @@ import {
   applyHardwareKeepAwake,
   applyNativeNightRadioMode,
   evaluatePowerState,
+  formatTimeoutMsZhTw,
+  getNativeKeepAwakeStatus,
   loadPowerSettings,
   MAX_BATTERY_POWER_PRESET,
   openNativeWirelessSettings,
+  openNativeWriteSettingsPermission,
   savePowerSettings,
   shouldTriggerGhostCleanAt,
   subscribeNativeTimeTick,
   type GhostCleanIntervalMinutes,
+  type KeepAwakeStatus,
   type NightRadioResult,
   type PowerSettings,
   type SyncIntervalMinutes,
@@ -346,6 +350,7 @@ export default function App() {
   const [manualNightExitKey, setManualNightExitKey] = useState<string | null>(null);
   const [manualNightForceActive, setManualNightForceActive] = useState<boolean>(false);
   const [nightRadioResult, setNightRadioResult] = useState<NightRadioResult | null>(null);
+  const [keepAwakeStatus, setKeepAwakeStatus] = useState<KeepAwakeStatus | null>(null);
   const [draftGithubRepo, setDraftGithubRepo] = useState<string>(githubRepo);
   const [updateCheckState, setUpdateCheckState] = useState<{
     status: 'idle' | 'loading' | 'result' | 'error';
@@ -418,10 +423,27 @@ export default function App() {
     applyHardwareBacklight(effectiveBrightnessValue);
   }, [effectiveBrightnessValue]);
 
-  // 動態控制防休眠鎖（夜間休眠時段或使用者關閉常亮時自動呼叫 allowSleepAgain 釋放 WakeLock，早上自行喚醒）
+  const refreshKeepAwakeStatus = useCallback(() => {
+    void getNativeKeepAwakeStatus().then((status) => {
+      if (status) {
+        setKeepAwakeStatus(status);
+      }
+    });
+  }, []);
+
+  // 動態控制防休眠鎖（夜間休眠時段或使用者關閉常亮時自動釋放常亮鎖並還原系統休眠逾時，早上自行喚醒）
   useEffect(() => {
     applyHardwareKeepAwake(powerEval.shouldKeepAwake);
-  }, [powerEval.shouldKeepAwake]);
+    const timer = window.setTimeout(refreshKeepAwakeStatus, 260);
+    return () => window.clearTimeout(timer);
+  }, [powerEval.shouldKeepAwake, refreshKeepAwakeStatus]);
+
+  // 開啟設定視窗時重新讀取原生防休眠接管狀態
+  useEffect(() => {
+    if (isSettingsOpen) {
+      refreshKeepAwakeStatus();
+    }
+  }, [isSettingsOpen, refreshKeepAwakeStatus]);
 
   // 進入／退出夜間模式時，自動嘗試開啟飛航模式並關閉 Wi-Fi 與藍牙（退出夜間模式時還原由本程式關閉之無線開關）
   const prevNightRadioActiveRef = useRef<boolean>(false);
@@ -438,9 +460,12 @@ export default function App() {
 
   // 監聽 Cordova deviceready（具黏性特性，即使早於 React 掛載仍會立即補觸發）、resume 與前景恢復事件，確保背光與常亮鎖確實套用
   useEffect(() => {
+    let statusTimer: number | null = null;
     const applyAllHardwareStates = () => {
       applyHardwareBacklight(effectiveBrightnessValue);
       applyHardwareKeepAwake(powerEval.shouldKeepAwake);
+      if (statusTimer !== null) window.clearTimeout(statusTimer);
+      statusTimer = window.setTimeout(refreshKeepAwakeStatus, 260);
     };
     const handleVisibility = () => {
       if (!document.hidden) {
@@ -457,12 +482,13 @@ export default function App() {
     document.addEventListener('resume', applyAllHardwareStates, false);
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
+      if (statusTimer !== null) window.clearTimeout(statusTimer);
       window.removeEventListener('eink-cordova-ready', applyAllHardwareStates);
       document.removeEventListener('deviceready', applyAllHardwareStates, false);
       document.removeEventListener('resume', applyAllHardwareStates, false);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [effectiveBrightnessValue, powerEval.shouldKeepAwake]);
+  }, [effectiveBrightnessValue, powerEval.shouldKeepAwake, refreshKeepAwakeStatus]);
 
   // 監聽視窗尺寸變化
   useEffect(() => {
@@ -2214,26 +2240,83 @@ export default function App() {
                   目前設定預覽：{draftPowerPreview.summaryText}
                 </p>
 
-                {/* 開關 1：螢幕常亮（防休眠鎖） */}
-                <label className="flex items-start gap-2 text-[length:calc(12.5px*var(--fs))] font-bold cursor-pointer leading-[1.45]">
-                  <input
-                    type="checkbox"
-                    checked={draftPowerSettings.keepScreenAwake}
-                    onChange={(e) =>
-                      setDraftPowerSettings((prev) => ({
-                        ...prev,
-                        keepScreenAwake: e.target.checked,
-                      }))
-                    }
-                    className="w-[1.15em] h-[1.15em] mt-0.5 shrink-0 accent-[var(--fg-color)]"
-                  />
-                  <span>
-                    啟用螢幕常亮（防止閱讀器自動休眠）
-                    <span className="block text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
-                      取消勾選則完全交由閱讀器系統的「自動休眠時間」接管，最省電。
+                {/* 開關 1：螢幕常亮（防休眠鎖＋系統休眠逾時動態接管） */}
+                <div className="flex flex-col gap-2">
+                  <label className="flex items-start gap-2 text-[length:calc(12.5px*var(--fs))] font-bold cursor-pointer leading-[1.45]">
+                    <input
+                      type="checkbox"
+                      checked={draftPowerSettings.keepScreenAwake}
+                      onChange={(e) =>
+                        setDraftPowerSettings((prev) => ({
+                          ...prev,
+                          keepScreenAwake: e.target.checked,
+                        }))
+                      }
+                      className="w-[1.15em] h-[1.15em] mt-0.5 shrink-0 accent-[var(--fg-color)]"
+                    />
+                    <span>
+                      啟用螢幕常亮（防止閱讀器自動休眠）
+                      <span className="block text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
+                        取消勾選則完全交由閱讀器系統的「自動休眠時間」接管，最省電。
+                      </span>
                     </span>
-                  </span>
-                </label>
+                  </label>
+
+                  {draftPowerSettings.keepScreenAwake && keepAwakeStatus && (
+                    <div className="ml-6 flex flex-col gap-1.5 rounded-[6px] border-[1.5px] border-[var(--border-color)] bg-[var(--bg-color)] p-2.5 text-[length:calc(12px*var(--fs))]">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-black">
+                          BOOX／Android 系統防休眠接管（API {keepAwakeStatus.sdkInt}）
+                        </span>
+                        <button
+                          type="button"
+                          onClick={refreshKeepAwakeStatus}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 text-[length:calc(11.5px*var(--fs))] font-extrabold border border-[var(--border-color)] rounded bg-[var(--surface-subtle)] text-[var(--fg-color)] cursor-pointer"
+                        >
+                          <RefreshCw className="w-[0.95em] h-[0.95em]" />
+                          重新檢查
+                        </button>
+                      </div>
+
+                      {keepAwakeStatus.canWriteSettings ? (
+                        <p className="font-bold leading-[1.45]">
+                          ✓ 已授權「修改系統設定」：
+                          {keepAwakeStatus.timeoutOverrideActive
+                            ? `目前系統逾時已暫時接管為「${formatTimeoutMsZhTw(keepAwakeStatus.currentScreenOffTimeoutMs)}」，離開本程式或進入夜間休眠時自動還原為原設定（${formatTimeoutMsZhTw(keepAwakeStatus.savedOriginalTimeoutMs)}）。`
+                            : `目前系統逾時為「${formatTimeoutMsZhTw(keepAwakeStatus.currentScreenOffTimeoutMs)}」（儲存啟用後將於前景自動接管為永不逾時）。`}
+                        </p>
+                      ) : (
+                        <>
+                          <p className="font-bold leading-[1.45]">
+                            ⚠ 尚未授權「修改系統設定」（目前系統自動休眠：
+                            {formatTimeoutMsZhTw(keepAwakeStatus.currentScreenOffTimeoutMs)}）
+                          </p>
+                          <p className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.45]">
+                            BOOX 10.3 等電子紙韌體會忽略一般應用程式的常亮鎖，並依系統預設時間（如 30 分鐘）強制休眠。請點下方按鈕開啟「允許修改系統設定」，本程式將於運作時動態暫時延長系統休眠逾時，離開或夜間模式時自動還原。
+                          </p>
+                          <div className="pt-0.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void openNativeWriteSettingsPermission();
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[length:calc(12px*var(--fs))] font-black border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--surface-active)] text-[var(--fg-inverse)] cursor-pointer"
+                            >
+                              <ExternalLink className="w-[1em] h-[1em] shrink-0" />
+                              開啟「修改系統設定」權限（解決 BOOX 強制休眠）
+                            </button>
+                          </div>
+                        </>
+                      )}
+
+                      <p className="text-[length:calc(11px*var(--fs))] font-semibold text-[var(--fg-muted)] font-num">
+                        硬體狀態：視窗常亮 {keepAwakeStatus.windowFlagActive ? '✓' : '—'} · 喚醒鎖{' '}
+                        {keepAwakeStatus.wakeLockHeld ? '✓' : '—'} · 系統逾時{' '}
+                        {formatTimeoutMsZhTw(keepAwakeStatus.currentScreenOffTimeoutMs)}
+                      </p>
+                    </div>
+                  )}
+                </div>
 
                 {/* 開關 2：夜間休眠與夜間極致省電排程 */}
                 <div className="flex flex-col gap-1.5">

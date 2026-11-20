@@ -32,6 +32,18 @@ var EInkOAuth = {
       Boolean(keepOn),
     ]);
   },
+  getKeepAwakeStatus: function (onSuccess, onError) {
+    exec(onSuccess || function () {}, onError || function () {}, 'EInkOAuth', 'getKeepAwakeStatus', []);
+  },
+  openWriteSettingsPermission: function (onSuccess, onError) {
+    exec(
+      onSuccess || function () {},
+      onError || function () {},
+      'EInkOAuth',
+      'openWriteSettingsPermission',
+      []
+    );
+  },
   listenTimeTick: function (onTick, onError) {
     exec(onTick || function () {}, onError || function () {}, 'EInkOAuth', 'listenTimeTick', []);
   },
