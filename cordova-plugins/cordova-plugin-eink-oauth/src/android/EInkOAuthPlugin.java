@@ -1,12 +1,16 @@
 package tw.eink.clockdashboard;
 
+import android.app.Activity;
+import android.app.KeyguardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
+import android.os.Build;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
+import android.view.WindowManager;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import javax.crypto.Cipher;
@@ -23,12 +27,10 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * Lightweight native Android OAuth 2.0 bridge for Cordova Android 13+ (API 34).
- * - Opens Google OAuth URLs in the system browser (no GMS required; works on BOOX/Viwoods/Read6).
- * - Delivers custom URI scheme redirect callbacks back into the WebView via onNewIntent.
- * - Persists ONLY the OAuth refresh_token encrypted with Android Keystore AES-256-GCM
- *   in app-private SharedPreferences so APK upgrades and reboots keep users signed in
- *   without ever storing access tokens in WebView localStorage/sessionStorage.
+ * Lightweight native Android bridge for Cordova Android 13+ (API 34):
+ * - OAuth 2.0 system-browser sign-in & custom URI scheme deep-link callback (no GMS required).
+ * - Android Keystore AES-256-GCM encrypted refresh_token persistence across APK updates/reboots.
+ * - AlarmManager.setAlarmClock() deep-sleep auto-wake scheduler & screen-turn-on window flags.
  */
 public class EInkOAuthPlugin extends CordovaPlugin {
     private static final String KEYSTORE_PROVIDER = "AndroidKeyStore";
@@ -48,17 +50,60 @@ public class EInkOAuthPlugin extends CordovaPlugin {
     @Override
     public void initialize(CordovaInterface cordova, CordovaWebView webView) {
         super.initialize(cordova, webView);
-        Intent launchIntent = cordova.getActivity().getIntent();
-        handlePossibleOAuthIntent(launchIntent);
+        Activity activity = cordova.getActivity();
+        if (activity != null) {
+            Intent launchIntent = activity.getIntent();
+            boolean wokenByAlarm =
+                    launchIntent != null
+                            && launchIntent.getBooleanExtra(EInkWakeReceiver.EXTRA_AUTO_WAKE_LAUNCH, false);
+            if (wokenByAlarm || EInkWakeReceiver.isDailyWakeEnabled(activity)) {
+                applyWakeWindowFlags(activity, true, wokenByAlarm);
+            }
+            handlePossibleOAuthIntent(launchIntent);
+        }
     }
 
     @Override
     public void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         if (cordova != null && cordova.getActivity() != null && intent != null) {
-            cordova.getActivity().setIntent(intent);
+            Activity activity = cordova.getActivity();
+            activity.setIntent(intent);
+            if (intent.getBooleanExtra(EInkWakeReceiver.EXTRA_AUTO_WAKE_LAUNCH, false)) {
+                applyWakeWindowFlags(activity, true, true);
+            }
         }
         handlePossibleOAuthIntent(intent);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void applyWakeWindowFlags(Activity activity, boolean allowWakeOverLock, boolean requestDismissKeyguard) {
+        if (activity == null) return;
+        activity.runOnUiThread(() -> {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    activity.setShowWhenLocked(allowWakeOverLock);
+                    activity.setTurnScreenOn(allowWakeOverLock);
+                } else {
+                    int flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                            | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                            | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD;
+                    if (allowWakeOverLock) {
+                        activity.getWindow().addFlags(flags);
+                    } else {
+                        activity.getWindow().clearFlags(flags);
+                    }
+                }
+                if (requestDismissKeyguard && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    KeyguardManager km = (KeyguardManager) activity.getSystemService(Context.KEYGUARD_SERVICE);
+                    if (km != null && km.isKeyguardLocked()) {
+                        km.requestDismissKeyguard(activity, null);
+                    }
+                }
+            } catch (Exception ignored) {
+                // Ignore ROM-specific window flag restrictions
+            }
+        });
     }
 
     private boolean isOAuthCallbackUri(Uri uri) {
@@ -136,8 +181,6 @@ public class EInkOAuthPlugin extends CordovaPlugin {
             editor.putString(PREF_IV, Base64.encodeToString(iv, Base64.NO_WRAP));
             editor.putString(PREF_CIPHERTEXT, Base64.encodeToString(ciphertext, Base64.NO_WRAP));
         } catch (Exception e) {
-            // Fallback for E-Ink ROMs with non-standard Keystore TEE:
-            // still isolated inside Android app-private MODE_PRIVATE storage (never in WebView storage)
             String encoded = Base64.encodeToString(
                     refreshToken.getBytes(StandardCharsets.UTF_8),
                     Base64.NO_WRAP
@@ -182,7 +225,6 @@ public class EInkOAuthPlugin extends CordovaPlugin {
                 result.put("refreshToken", new String(plain, StandardCharsets.UTF_8));
             }
         } catch (Exception e) {
-            // Key invalidated or corrupted: clear safely and prompt clean sign-in
             clearStoredRefreshToken();
             result.put("refreshToken", "");
             result.put("accountEmail", "");
@@ -281,6 +323,55 @@ public class EInkOAuthPlugin extends CordovaPlugin {
                 callbackContext.success();
             } catch (Exception e) {
                 callbackContext.error("Failed to clear refresh token: " + e.getMessage());
+            }
+            return true;
+        }
+
+        if ("scheduleDailyWake".equals(action)) {
+            int hour = args.optInt(0, 7);
+            int minute = args.optInt(1, 0);
+            try {
+                Activity activity = cordova.getActivity();
+                applyWakeWindowFlags(activity, true, false);
+                JSONObject res = EInkWakeReceiver.scheduleDailyWake(activity, hour, minute);
+                callbackContext.success(res);
+            } catch (Exception e) {
+                callbackContext.error("Failed to schedule daily wake: " + e.getMessage());
+            }
+            return true;
+        }
+
+        if ("cancelDailyWake".equals(action)) {
+            try {
+                Activity activity = cordova.getActivity();
+                EInkWakeReceiver.cancelDailyWake(activity);
+                applyWakeWindowFlags(activity, false, false);
+                callbackContext.success();
+            } catch (Exception e) {
+                callbackContext.error("Failed to cancel daily wake: " + e.getMessage());
+            }
+            return true;
+        }
+
+        if ("scheduleTestWake".equals(action)) {
+            int delaySeconds = args.optInt(0, 60);
+            try {
+                Activity activity = cordova.getActivity();
+                applyWakeWindowFlags(activity, true, false);
+                JSONObject res = EInkWakeReceiver.scheduleTestWake(activity, delaySeconds);
+                callbackContext.success(res);
+            } catch (Exception e) {
+                callbackContext.error("Failed to schedule test wake: " + e.getMessage());
+            }
+            return true;
+        }
+
+        if ("getWakeStatus".equals(action)) {
+            try {
+                JSONObject res = EInkWakeReceiver.getWakeStatus(cordova.getActivity());
+                callbackContext.success(res);
+            } catch (Exception e) {
+                callbackContext.error("Failed to get wake status: " + e.getMessage());
             }
             return true;
         }

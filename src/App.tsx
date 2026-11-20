@@ -87,7 +87,9 @@ import {
   loadPowerSettings,
   MAX_BATTERY_POWER_PRESET,
   savePowerSettings,
+  scheduleNativeTestWake,
   shouldTriggerGhostCleanAt,
+  syncNativeMorningWakeSchedule,
   type GhostCleanIntervalMinutes,
   type PowerSettings,
   type SyncIntervalMinutes,
@@ -338,6 +340,10 @@ export default function App() {
   const [draftStrictKey, setDraftStrictKey] = useState<boolean>(false);
   const [draftBacklight, setDraftBacklight] = useState<BacklightSettings>(backlight);
   const [draftPowerSettings, setDraftPowerSettings] = useState<PowerSettings>(powerSettings);
+  const [testWakeState, setTestWakeState] = useState<{
+    status: 'idle' | 'loading' | 'scheduled' | 'error';
+    message: string;
+  }>({ status: 'idle', message: '' });
   const [draftGithubRepo, setDraftGithubRepo] = useState<string>(githubRepo);
   const [updateCheckState, setUpdateCheckState] = useState<{
     status: 'idle' | 'loading' | 'result' | 'error';
@@ -405,15 +411,25 @@ export default function App() {
     applyHardwareKeepAwake(powerEval.shouldKeepAwake);
   }, [powerEval.shouldKeepAwake]);
 
-  // 監聽 Cordova deviceready / resume 以確保喚醒後立即套用背光與防休眠狀態
+  // 同步 Android 原生每日早上自動喚醒排程（AlarmManager.setAlarmClock，從深度休眠喚醒螢幕）
+  useEffect(() => {
+    void syncNativeMorningWakeSchedule(powerSettings);
+  }, [
+    powerSettings.nightSleepEnabled,
+    powerSettings.nightSleepAutoWake,
+    powerSettings.nightSleepEndHour,
+  ]);
+
+  // 監聽 Cordova deviceready / resume 以確保喚醒後立即套用背光、防休眠狀態與早上喚醒排程
   useEffect(() => {
     const handleCordovaReady = () => {
       applyHardwareBacklight(backlightEval.brightnessValue);
       applyHardwareKeepAwake(powerEval.shouldKeepAwake);
+      void syncNativeMorningWakeSchedule(powerSettings);
     };
     window.addEventListener('eink-cordova-ready', handleCordovaReady);
     return () => window.removeEventListener('eink-cordova-ready', handleCordovaReady);
-  }, [backlightEval.brightnessValue, powerEval.shouldKeepAwake]);
+  }, [backlightEval.brightnessValue, powerEval.shouldKeepAwake, powerSettings]);
 
   // 監聽視窗尺寸變化
   useEffect(() => {
@@ -1031,6 +1047,7 @@ export default function App() {
     setDraftStrictKey(strictApiKeyOnly);
     setDraftBacklight(backlight);
     setDraftPowerSettings(powerSettings);
+    setTestWakeState({ status: 'idle', message: '' });
     setDraftGithubRepo(githubRepo);
     setUpdateCheckState({ status: 'idle' });
     setShowCwaKey(false);
@@ -1048,6 +1065,24 @@ export default function App() {
     powerSettings,
     githubRepo,
   ]);
+
+  const handleScheduleTestWake = async () => {
+    setTestWakeState({ status: 'loading', message: '正在向 Android 系統預約 60 秒後自動喚醒...' });
+    const result = await scheduleNativeTestWake(60);
+    if (result.status === 'scheduled') {
+      setTestWakeState({
+        status: 'scheduled',
+        message:
+          result.message ||
+          '已預約 60 秒後自動喚醒，請立即按電源鍵讓閱讀器進入休眠並靜候測試。',
+      });
+    } else {
+      setTestWakeState({
+        status: 'error',
+        message: result.message || '無法預約自動喚醒，請確認是否為最新版 Android APK。',
+      });
+    }
+  };
 
   const handleCheckAppUpdate = async () => {
     const repoInput = draftGithubRepo.trim() || DEFAULT_GITHUB_REPO;
@@ -2062,43 +2097,93 @@ export default function App() {
                   </label>
 
                   {draftPowerSettings.nightSleepEnabled && (
-                    <div className="flex flex-wrap items-center gap-2 pl-6 text-[length:calc(12.5px*var(--fs))] font-bold">
-                      <span>休眠時段：</span>
-                      <select
-                        aria-label="夜間休眠開始時間"
-                        value={draftPowerSettings.nightSleepStartHour}
-                        onChange={(e) =>
-                          setDraftPowerSettings((prev) => ({
-                            ...prev,
-                            nightSleepStartHour: Number(e.target.value),
-                          }))
-                        }
-                        className="px-2 py-1 text-[length:calc(12.5px*var(--fs))] border border-[var(--border-color)] rounded bg-[var(--bg-color)] text-[var(--fg-color)] font-num"
-                      >
-                        {Array.from({ length: 24 }, (_, h) => (
-                          <option key={h} value={h}>
-                            {String(h).padStart(2, '0')}:00
-                          </option>
-                        ))}
-                      </select>
-                      <span>～</span>
-                      <select
-                        aria-label="夜間休眠結束時間"
-                        value={draftPowerSettings.nightSleepEndHour}
-                        onChange={(e) =>
-                          setDraftPowerSettings((prev) => ({
-                            ...prev,
-                            nightSleepEndHour: Number(e.target.value),
-                          }))
-                        }
-                        className="px-2 py-1 text-[length:calc(12.5px*var(--fs))] border border-[var(--border-color)] rounded bg-[var(--bg-color)] text-[var(--fg-color)] font-num"
-                      >
-                        {Array.from({ length: 24 }, (_, h) => (
-                          <option key={h} value={h}>
-                            {String(h).padStart(2, '0')}:00
-                          </option>
-                        ))}
-                      </select>
+                    <div className="flex flex-col gap-2 pl-6 text-[length:calc(12.5px*var(--fs))] font-bold">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span>休眠時段：</span>
+                        <select
+                          aria-label="夜間休眠開始時間"
+                          value={draftPowerSettings.nightSleepStartHour}
+                          onChange={(e) =>
+                            setDraftPowerSettings((prev) => ({
+                              ...prev,
+                              nightSleepStartHour: Number(e.target.value),
+                            }))
+                          }
+                          className="px-2 py-1 text-[length:calc(12.5px*var(--fs))] border border-[var(--border-color)] rounded bg-[var(--bg-color)] text-[var(--fg-color)] font-num"
+                        >
+                          {Array.from({ length: 24 }, (_, h) => (
+                            <option key={h} value={h}>
+                              {String(h).padStart(2, '0')}:00
+                            </option>
+                          ))}
+                        </select>
+                        <span>～</span>
+                        <select
+                          aria-label="夜間休眠結束時間"
+                          value={draftPowerSettings.nightSleepEndHour}
+                          onChange={(e) =>
+                            setDraftPowerSettings((prev) => ({
+                              ...prev,
+                              nightSleepEndHour: Number(e.target.value),
+                            }))
+                          }
+                          className="px-2 py-1 text-[length:calc(12.5px*var(--fs))] border border-[var(--border-color)] rounded bg-[var(--bg-color)] text-[var(--fg-color)] font-num"
+                        >
+                          {Array.from({ length: 24 }, (_, h) => (
+                            <option key={h} value={h}>
+                              {String(h).padStart(2, '0')}:00
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <label className="flex items-start gap-2 cursor-pointer leading-[1.45]">
+                        <input
+                          type="checkbox"
+                          checked={draftPowerSettings.nightSleepAutoWake}
+                          onChange={(e) =>
+                            setDraftPowerSettings((prev) => ({
+                              ...prev,
+                              nightSleepAutoWake: e.target.checked,
+                            }))
+                          }
+                          className="w-[1.1em] h-[1.1em] mt-0.5 shrink-0 accent-[var(--fg-color)]"
+                        />
+                        <span>
+                          早上到達結束時間自動喚醒（透過 Android 鬧鐘從深度休眠喚醒螢幕並回到時鐘）
+                        </span>
+                      </label>
+
+                      <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={handleScheduleTestWake}
+                          disabled={testWakeState.status === 'loading'}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[length:calc(12px*var(--fs))] font-extrabold border-[1.5px] border-[var(--border-color)] rounded-[6px] bg-[var(--bg-color)] text-[var(--fg-color)] cursor-pointer active:bg-[var(--surface-active)] active:text-[var(--fg-inverse)] disabled:opacity-50"
+                        >
+                          <Clock className="w-[1em] h-[1em] shrink-0" />
+                          測試 1 分鐘後自動喚醒
+                        </button>
+                        <span className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)]">
+                          點完請按電源鍵休眠，60 秒後觀察是否自動亮屏
+                        </span>
+                      </div>
+
+                      {testWakeState.status !== 'idle' && (
+                        <p
+                          className={`text-[length:calc(12px*var(--fs))] leading-[1.5] px-2.5 py-2 rounded-[6px] border ${
+                            testWakeState.status === 'error'
+                              ? 'font-extrabold border-[var(--border-color)] bg-[var(--bg-color)]'
+                              : 'font-bold border-[var(--border-subtle)] bg-[var(--bg-color)]'
+                          }`}
+                        >
+                          {testWakeState.message}
+                        </p>
+                      )}
+
+                      <p className="text-[length:calc(11.5px*var(--fs))] font-semibold text-[var(--fg-muted)] leading-[1.45]">
+                        註：僅在「待機休眠（未關機）」狀態下有效；若 BOOX 等機型有開啟系統「應用凍結」，請先將本時鐘取消凍結以免系統攔截定時喚醒。
+                      </p>
                     </div>
                   )}
                 </div>
@@ -2595,7 +2680,7 @@ export default function App() {
                 </li>
                 <li>
                   <span className="font-extrabold">背光、續航與休眠排程：</span>
-                  可於設定「進階續航與休眠開關」自由調整螢幕常亮鎖、夜間自動休眠時段（時段內釋放常亮鎖讓系統進入深度休眠）、純離線模式、背景同步週期（15 分～2 小時／僅手動）與自動清殘影頻率，亦可點擊「一鍵套用長續航建議」。
+                  可於設定「進階續航與休眠開關」自由調整螢幕常亮鎖、夜間自動休眠時段（時段內釋放常亮鎖進入深度休眠，並可勾選「早上到達結束時間自動喚醒」與使用 1 分鐘喚醒測試）、純離線模式、背景同步週期（15 分～2 小時／僅手動）與自動清殘影頻率，亦可點擊「一鍵套用長續航建議」。
                 </li>
                 <li>
                   <span className="font-extrabold">單一 API Key 與隱私：</span>

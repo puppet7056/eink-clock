@@ -10,6 +10,8 @@ export interface PowerSettings {
   nightSleepStartHour: number;
   /** 夜間自動休眠結束小時 (0 ~ 23) */
   nightSleepEndHour: number;
+  /** 早上到達休眠結束時間時，是否透過 Android 原生 AlarmManager 自動喚醒螢幕回到時鐘 */
+  nightSleepAutoWake: boolean;
   /** 氣象與日曆背景同步週期（分鐘）：15 / 30 / 60 / 120 / 0(僅手動) */
   syncIntervalMinutes: SyncIntervalMinutes;
   /** 電子紙自動清殘影全刷週期（分鐘）：30 / 60 / 120 / 0(關閉自動全刷) */
@@ -23,6 +25,7 @@ export const DEFAULT_POWER_SETTINGS: PowerSettings = {
   nightSleepEnabled: false,
   nightSleepStartHour: 23,
   nightSleepEndHour: 7,
+  nightSleepAutoWake: true,
   syncIntervalMinutes: 30,
   ghostCleanIntervalMinutes: 60,
   offlineClockMode: false,
@@ -33,6 +36,7 @@ export const MAX_BATTERY_POWER_PRESET: PowerSettings = {
   nightSleepEnabled: true,
   nightSleepStartHour: 23,
   nightSleepEndHour: 7,
+  nightSleepAutoWake: true,
   syncIntervalMinutes: 60,
   ghostCleanIntervalMinutes: 120,
   offlineClockMode: false,
@@ -82,6 +86,7 @@ export function loadPowerSettings(): PowerSettings {
         parsed.nightSleepEndHour,
         DEFAULT_POWER_SETTINGS.nightSleepEndHour
       ),
+      nightSleepAutoWake: parsed.nightSleepAutoWake !== false,
       syncIntervalMinutes: normalizeSyncInterval(parsed.syncIntervalMinutes),
       ghostCleanIntervalMinutes: normalizeGhostInterval(parsed.ghostCleanIntervalMinutes),
       offlineClockMode: Boolean(parsed.offlineClockMode),
@@ -124,10 +129,12 @@ export function evaluatePowerState(settings: PowerSettings, now: Date): PowerEva
   if (!settings.keepScreenAwake) {
     parts.push('跟隨系統休眠');
   } else if (isNightSleepActive) {
-    parts.push('夜間休眠中');
+    parts.push(settings.nightSleepAutoWake ? '夜間休眠中(含早喚醒)' : '夜間休眠中');
   } else if (settings.nightSleepEnabled) {
+    const startLabel = String(settings.nightSleepStartHour).padStart(2, '0');
+    const endLabel = String(settings.nightSleepEndHour).padStart(2, '0');
     parts.push(
-      `夜休 ${String(settings.nightSleepStartHour).padStart(2, '0')}-${String(settings.nightSleepEndHour).padStart(2, '0')}`
+      `夜休 ${startLabel}-${endLabel}${settings.nightSleepAutoWake ? '(含自動喚醒)' : ''}`
     );
   } else {
     parts.push('常亮');
@@ -194,3 +201,145 @@ export function applyHardwareKeepAwake(shouldKeepAwake: boolean): 'applied' | 'u
   }
   return 'unsupported';
 }
+
+interface NativeWakeBridge {
+  scheduleDailyWake?: (
+    hour: number,
+    minute: number,
+    onSuccess?: (res: { scheduled?: boolean; exact?: boolean; triggerAtMillis?: number }) => void,
+    onError?: (err: unknown) => void
+  ) => void;
+  cancelDailyWake?: (onSuccess?: () => void, onError?: (err: unknown) => void) => void;
+  scheduleTestWake?: (
+    delaySeconds: number,
+    onSuccess?: (res: {
+      scheduled?: boolean;
+      exact?: boolean;
+      delaySeconds?: number;
+      triggerAtMillis?: number;
+    }) => void,
+    onError?: (err: unknown) => void
+  ) => void;
+}
+
+export interface NativeWakeScheduleResult {
+  status: 'scheduled' | 'cancelled' | 'unsupported' | 'error';
+  exact?: boolean;
+  triggerAtMillis?: number;
+  message?: string;
+}
+
+function getNativeWakeBridge(): NativeWakeBridge | null {
+  try {
+    const w = window as unknown as { EInkOAuth?: NativeWakeBridge };
+    return w.EInkOAuth ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function formatWakeTimeClock(millis: number): string {
+  const d = new Date(millis);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+export function syncNativeMorningWakeSchedule(
+  settings: PowerSettings
+): Promise<NativeWakeScheduleResult> {
+  const bridge = getNativeWakeBridge();
+  if (!bridge) {
+    return Promise.resolve({ status: 'unsupported' });
+  }
+
+  const shouldSchedule = settings.nightSleepEnabled && settings.nightSleepAutoWake;
+  if (shouldSchedule) {
+    if (typeof bridge.scheduleDailyWake !== 'function') {
+      return Promise.resolve({ status: 'unsupported' });
+    }
+    return new Promise((resolve) => {
+      try {
+        bridge.scheduleDailyWake?.(
+          settings.nightSleepEndHour,
+          0,
+          (res) => {
+            resolve({
+              status: 'scheduled',
+              exact: res?.exact !== false,
+              triggerAtMillis: res?.triggerAtMillis,
+            });
+          },
+          (err) => {
+            resolve({
+              status: 'error',
+              message: typeof err === 'string' ? err : '排程早上自動喚醒失敗',
+            });
+          }
+        );
+      } catch {
+        resolve({ status: 'error', message: '排程早上自動喚醒發生例外' });
+      }
+    });
+  }
+
+  if (typeof bridge.cancelDailyWake !== 'function') {
+    return Promise.resolve({ status: 'unsupported' });
+  }
+  return new Promise((resolve) => {
+    try {
+      bridge.cancelDailyWake?.(
+        () => resolve({ status: 'cancelled' }),
+        (err) =>
+          resolve({
+            status: 'error',
+            message: typeof err === 'string' ? err : '取消早上自動喚醒失敗',
+          })
+      );
+    } catch {
+      resolve({ status: 'error', message: '取消早上自動喚醒發生例外' });
+    }
+  });
+}
+
+export function scheduleNativeTestWake(delaySeconds = 60): Promise<NativeWakeScheduleResult> {
+  const bridge = getNativeWakeBridge();
+  if (!bridge || typeof bridge.scheduleTestWake !== 'function') {
+    return Promise.resolve({
+      status: 'unsupported',
+      message: '此功能需在最新版 Android 電子紙 APK 中執行，網頁瀏覽器無法喚醒硬體螢幕。',
+    });
+  }
+
+  // 立即釋放螢幕常亮鎖，方便使用者按電源鍵休眠並測試 60 秒後喚醒
+  applyHardwareKeepAwake(false);
+
+  return new Promise((resolve) => {
+    try {
+      bridge.scheduleTestWake?.(
+        delaySeconds,
+        (res) => {
+          const triggerAt = res?.triggerAtMillis ?? Date.now() + delaySeconds * 1000;
+          const timeLabel = formatWakeTimeClock(triggerAt);
+          const exactNote = res?.exact === false ? '（系統未開放精準鬧鐘，喚醒時間可能延遲數十秒）' : '';
+          resolve({
+            status: 'scheduled',
+            exact: res?.exact !== false,
+            triggerAtMillis: triggerAt,
+            message: `已預約 ${delaySeconds} 秒後自動喚醒（約 ${timeLabel}）${exactNote}。請現在按電源鍵讓閱讀器進入休眠，靜候測試是否自動亮屏回到時鐘。`,
+          });
+        },
+        (err) => {
+          resolve({
+            status: 'error',
+            message: typeof err === 'string' ? err : '預約測試喚醒失敗',
+          });
+        }
+      );
+    } catch {
+      resolve({ status: 'error', message: '預約測試喚醒時發生系統例外' });
+    }
+  });
+}
+
